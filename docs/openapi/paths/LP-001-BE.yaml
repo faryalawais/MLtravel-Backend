@@ -1,0 +1,30 @@
+# LP-001-BE — Health endpoint
+# Endpoints: GET /api/health
+# Source: features/LP-001/LP-001.feature (@be scenarios)
+
+/api/health:
+  get:
+    operationId: getHealth
+    summary: API health check
+    description: Returns minimal health payload when the API server is running.
+    tags:
+      - Health
+    responses:
+      '200':
+        description: API is healthy
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HealthResponse'
+
+components:
+  schemas:
+    HealthResponse:
+      type: object
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          example: ok
+          description: Health status indicator
