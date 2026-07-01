@@ -1,0 +1,9 @@
+{
+  "_comment": "API field registry — maps field.* token names to $jsonPath expressions.",
+  "field.health.status": {
+    "$jsonPath": "$.status",
+    "description": "Health status indicator returned by GET /api/health",
+    "schema": "HealthResponse",
+    "feature": "LP-001-BE"
+  }
+}

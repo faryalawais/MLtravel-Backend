@@ -1,0 +1,147 @@
+---
+name: design-tokens
+description: Validate and compile W3C DTCG design tokens into CSS variables and a Tailwind theme partial. Use this skill whenever the user mentions design tokens, DTCG, a tokens.json export, "build tokens", "validate tokens", "compile tokens", or wants the design contract refreshed after a Figma export — even if they don't explicitly say "skill".
+---
+
+# design-tokens
+
+Step 3 of the agentic SDLC loop. Turns a raw DTCG token export into the
+verified, machine-consumable design-contract source that every later step
+depends on.
+
+## Inputs
+
+A three-file W3C DTCG token set under `tokens/`:
+- `tokens/primitives.json` — raw scale tokens (`$extensions.layer = "primitive"`).
+- `tokens/semantics.json` — intent-named aliases (`$extensions.layer = "semantic"`, every `$value` is a `{group.token}` reference).
+- `tokens/typography.json` — compound `$type: typography` tokens (`$extensions.layer = "semantic"`).
+
+The shape matches the Tokens Studio for Figma export convention. See
+`tokens/templates/` for the reference and the `figma-extract` skill for the
+authoring contract.
+
+## Outputs
+- `tokens/build/tokens.css` — CSS custom properties (`:root { --... }`) with
+  `outputReferences: true` so semantic aliases compile to `var(--primitive)`
+  references. Compound typography is expanded into one CSS var per
+  sub-property (e.g. `--typography-heading-lg-bold-font-size`).
+- `tokens/build/tailwind-tokens.js` — Tailwind theme partial covering
+  `colors / spacing / borderRadius / fontSize / fontFamily / fontWeight /
+  lineHeight / boxShadow / typography`.
+- `reports/tokens-report.md` — human-readable validation + build report.
+
+## Procedure
+
+1. **Parse & structurally validate** every leaf across all three files.
+   - Each file must be valid JSON.
+   - Every leaf token must have both `$value` and `$type`.
+   - `$type` must be one of: `color`, `dimension`, `fontFamily`, `fontWeight`,
+     `number`, `duration`, `shadow`, `typography` (extend as needed).
+   - Every leaf must carry `$extensions.layer` set to `"primitive"` or
+     `"semantic"`. Anything missing or set to another value is a FAIL.
+   - DTCG **object value forms** are required:
+     - `color.$value`: `{ colorSpace, components: [r,g,b], alpha }` (not hex strings).
+     - `dimension.$value`: `{ value, unit }` (not `"16px"` strings).
+     - `shadow.$value.{offsetX,offsetY,blur,spread}`: `{ value, unit }` objects.
+     - `typography.$value`: object with `fontFamily / fontSize / fontWeight /
+       lineHeight` sub-properties (sub-properties may be aliases).
+     Any string-form `"#xxxxxx"` or `"16px"` value is a FAIL — it indicates
+     the source file drifted from the agreed shape.
+   - **No file may have a top-level `$description`** — Style Dictionary
+     merges all three sources into one document and reports collisions on
+     duplicate top-level keys. Per-file documentation lives here in the
+     report.
+2. **Resolve aliases.** Any `$value` of the form `{group.token}` (including
+   alias sub-properties inside compound typography tokens) must resolve to a
+   real token. Fail on unresolved references or circular aliases. Also fail
+   if a `"semantic"` leaf's `$value` is **not** an alias — semantic tokens
+   must point at a primitive (or, for compound typography, at primitive
+   sub-properties), never carry a raw value.
+3. **Enforce the semantic layer.** The following semantic groups must exist
+   with at least one leaf each; missing a required group is a FAIL:
+   - `color.surface.*` (flat — no states)
+   - `color.text.*` (flat)
+   - `color.border.*` (flat)
+   - `color.action.{variant}.{state}.{slot}` **with full state.slot
+     nesting** — at minimum `variant ∈ {primary, secondary, tertiary,
+     danger}`, `state ∈ {default, hover, active, focused, disabled}`,
+     `slot ⊇ {background, label}`. Flat
+     `color.action.primary-hover`-style keys are a FAIL — that form was
+     replaced by nested state.slot in the v3 schema.
+   - `color.input.*` modelling form-input states
+     (`color.input.default.{empty | focused | filled | error | disabled}`
+     with per-state slots).
+   - `color.feedback.{severity}.{slot}` with at minimum `severity ∈
+     {success, warning, error, info}` and `slot ⊇ {background, foreground,
+     border, icon}`.
+   - `color.focus.{ring, ring-error, ring-info}`.
+   - `space.*` containing named-scale aliases (e.g. `xs/sm/md/lg/xl/...`).
+   - `radius.*` containing semantic-role aliases (e.g. `control`,
+     `surface`, `pill`).
+   - `shadow.*` containing named-scale aliases (e.g. `sm/md/lg`).
+   - `typography.{display | heading | body | label}.*` — at least one
+     compound per role.
+   Every semantic leaf's alias target must exist as a primitive in the
+   merged document and have a matching `$type` (or, for compound typography,
+   matching atomic primitive types).
+4. **Check naming.** Token paths should be consistent (dotted
+   `category.group.…`, kebab-case key suffixes like `inverse-muted`,
+   `ring-error`). Decimal-keyed primitives (e.g. `spacing.0.5`) are allowed
+   because the CSS pipeline normalises them (`--spacing-0-5`); the Tailwind
+   partial preserves the dot in the key so `m-0.5` classes still work.
+5. **Compile.** Run `npm run tokens:build` (Style Dictionary, config at
+   `tokens/sd.config.mjs`). The config reads all three sources, registers
+   DTCG-aware transforms (`color/dtcg-to-css`, `dimension/object-to-string`,
+   `shadow/object-to-string`, `fontFamily/css`), and emits the two build
+   artifacts. A clean build prints `✔︎ tokens/build/tokens.css` and
+   `✔︎ tokens/build/tailwind-tokens.js` and reports zero collisions.
+6. **Write the report** to `reports/tokens-report.md`:
+   - Per-file leaf counts (primitives / semantics / typography).
+   - Token counts by `$type` and by `$extensions.layer`.
+   - The full list of token names available to later steps, **organised by
+     file**: PRIMITIVE vocabulary (`primitives.json`), SEMANTIC vocabulary
+     (`semantics.json`), TYPOGRAPHY vocabulary (`typography.json`). This
+     list IS the design-contract vocabulary — `spec-author` and
+     `design-contract` should reference semantic tokens by default and fall
+     back to primitives only when no semantic alias fits.
+   - Any warnings (W-1..W-N).
+   - A final line: `STATUS: PASS` or `STATUS: FAIL` with reasons.
+
+## Success criteria
+Both build artifacts exist, and `reports/tokens-report.md` ends with
+`STATUS: PASS`.
+
+## Failure handling
+On any validation or build error: do **not** produce partial artifacts as if
+they were valid. Write the precise error (file, token path, reason) into the
+report, end it with `STATUS: FAIL`, and stop. Do not advance any feature.
+
+## Notes
+- This skill never edits `tokens/primitives.json`, `tokens/semantics.json`,
+  or `tokens/typography.json` — those files are owned by the designer /
+  Figma export / `figma-extract` skill. If a source file is broken, report
+  it; don't "fix" it.
+- The Style Dictionary config at `tokens/sd.config.mjs` IS owned by this
+  skill. If it lacks a transform/format needed by a new token type or value
+  shape, update it (and document the change in the report).
+- If `tokens/sd.config.mjs` is missing, create it per the project README
+  before proceeding.
+
+## Out of scope — UI registry (sibling)
+
+The file `tokens/ui-registry.json` is **not** a design token file. It is the
+versioned source of truth for **screen** and **component** paths used in
+Gherkin scenarios, specified by
+`tokens/templates/PRD-Executable-Requirements-Gherkin-Component-Paths.docx.md`
+and owned by the `figma-extract` skill (Mode B populates it, Mode A leaves
+it alone). Its build is a separate command:
+
+```
+npm run ui-registry:build      # validate + emit test-ids.ts + glossary.md
+npm run ui-registry:validate   # validate only (used by npm run gate)
+```
+
+Per PRD §3, a token path resolves to a *value* (which is what this skill
+handles); a component path resolves to an *identity* (which the UI registry
+handles). Same path-as-contract discipline, different storage and tooling.
+Do not merge them into one pipeline.

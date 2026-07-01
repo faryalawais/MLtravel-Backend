@@ -1,0 +1,843 @@
+---
+name: figma-extract
+description: Pull design data out of Figma via the Figma MCP — design tokens (Variables) and per-feature frame specs with measurements and a reference screenshot. Use this skill whenever the user wants to extract, sync, or import anything from Figma — tokens, variables, a frame, component specs, measurements, or a reference image — even if they don't say "skill". Requires the Figma Dev Mode MCP server to be connected.
+---
+
+# figma-extract
+
+Connects the agentic SDLC loop to Figma. It has two modes; pick the one the
+user is asking for.
+
+## Prerequisite
+
+The **Figma Dev Mode MCP server** must be connected (see the project
+`GUIDE.md`). Verify a Figma MCP tool is available before doing anything. If it
+is not, **stop and tell the user how to enable it** — never fabricate design
+data, measurements, or screenshots.
+
+## HARD RULE — Screenshots are visual reference only. NEVER a data source.
+
+`get_screenshot` / `reference.png` exists to give the developer a visual
+baseline. It is **never** a substitute for structured design data.
+
+**If `get_design_context` fails or returns no structured data:**
+- **STOP immediately.** Do not fall back to screenshots.
+- Do not proceed to `spec.json`, `design-contract`, or any downstream skill.
+- Report the exact MCP error to the user.
+- Tell the user what to fix (MCP disconnected, wrong node ID, access issue,
+  frame too large — follow the Large Frame Protocol below instead).
+
+A screenshot-only extraction produces zero measurements, zero token mappings,
+and zero component anatomy. Any implementation built from it will deviate from
+the Figma design. **This is forbidden.**
+
+The only exception: after structured data is successfully extracted, screenshots
+are taken as visual reference (step 2 / step 1d). They accompany `spec.json`,
+not replace it.
+
+---
+
+## Mode A — `tokens`  (refresh the design system)
+
+Use when the user wants to (re)build the design tokens from Figma.
+
+The token set lives in **three sibling files** under `tokens/`, matching the
+Tokens Studio for Figma plugin export convention (see
+`tokens/templates/` for the reference shape):
+
+1. **`tokens/primitives.json`** — raw scale tokens. Every leaf carries
+   `$extensions.layer = "primitive"`.
+2. **`tokens/semantics.json`** — intent-named DTCG aliases pointing into
+   primitives. App code, BDD steps, and design contracts reference *these*,
+   not primitives. Every leaf carries `$extensions.layer = "semantic"` and
+   `$extensions.aliasOf = "<primitive.path>"`. Every alias `$value` is a
+   `{group.token}` reference into a primitive.
+3. **`tokens/typography.json`** — compound `$type: typography` tokens. Each
+   `$value` composes aliases into `font.family / weight / size / lineHeight`
+   from `primitives.json`. Layer marker is `"semantic"`.
+
+### Required value forms (W3C DTCG, latest draft)
+
+Use the **object** value forms, not the older string forms. They round-trip
+cleanly to Figma Variables and survive future DTCG spec moves.
+
+- **color**: `{ "colorSpace": "srgb", "components": [r, g, b], "alpha": 1 }`
+  with r/g/b normalised to `0..1`. Not `"#rrggbb"` strings.
+- **dimension** (spacing, radius, font size, line height): `{ "value": 16,
+  "unit": "px" }`. Not `"16px"` strings. (Tokens Studio uses `"number"`
+  type for unitless spacing — we use `"dimension"` with `"px"` instead, more
+  DTCG-correct.)
+- **shadow**: `{ "color": "rgba(...)", "offsetX": {value, unit},
+  "offsetY": {value, unit}, "blur": {value, unit}, "spread": {value, unit} }`
+- **fontFamily**: array of strings (e.g. `["Inter", "system-ui",
+  "sans-serif"]`).
+- **typography** (compound): `$value` object with
+  `fontFamily / fontSize / fontWeight / lineHeight` (and optionally
+  `letterSpacing`). **Sub-properties SHOULD be aliases** (e.g.
+  `"fontSize": "{font.size.xl}"`) — Tokens Studio's export inlines literals
+  because of plugin limits; we prefer aliases for single-source-of-truth.
+
+### Required token groups
+
+**`primitives.json`** must contain:
+- `color.{primary, secondary, tertiary, error, success, warning, info,
+  typography, outline, background, indicator}` — colour ramps. `background`
+  also carries the literal swatches (`error/warning/success/info/muted/
+  light/dark`); `typography` carries `white/gray/black`.
+- `colorDark.*` — dark-mode mirror of the colour ramps. (CSS-only; see
+  W-1 in the report.)
+- `spacing` — numeric scale, keys preserve the consumer convention
+  (e.g. Tailwind `"0", "px", "0.5", "1", …, "96"`).
+- `radii.{none, sm, base, md, lg, xl, 2xl, 3xl, full}`.
+- `font.family` / `font.weight` / `font.size` / `font.lineHeight`.
+- `shadows.{hard-1..5, soft-1..4}`.
+
+**`semantics.json`** must contain (extend as the system grows; never shrink):
+- `color.surface.{canvas, raised, sunken, muted, inverse, inverse-muted}` —
+  flat (surfaces don't carry interaction states).
+- `color.text.{primary, secondary, tertiary, disabled, inverse,
+  inverse-muted, link, accent, success, warning, error, info}` — flat.
+- `color.border.{default, subtle, strong, focus, success, warning, error,
+  info}` — flat.
+- `color.action.{primary | secondary | tertiary | danger}` **nested by
+  state then slot**:
+  - state ∈ `{default, hover, active, focused, disabled}`
+  - slot ∈ `{background, label}` (plus `border` on `focused`)
+- `color.input` — flat slots (`surface, border, placeholder-dim`,
+  `icon.{default, error, disabled}`) plus
+  `color.input.default.{empty | focused | filled | error | disabled}` with
+  per-state slots (`border, placeholder, value, helper, surface`).
+- `color.feedback.{success | warning | error | info}.{background,
+  foreground, border, icon}`.
+- `color.focus.{ring, ring-error, ring-info}`.
+- `space.{xs, sm, md, lg, xl, 2xl, 3xl, gap, gutter, section}`.
+- `radius.{control, surface, panel, pill, sharp}`.
+- `shadow.{sm, md, lg, focus}`.
+
+**`typography.json`** must contain compound tokens for at least
+`typography.{display | heading | body | label}.{size}.{weight}`. See
+`reports/tokens-report.md` and `tokens/typography.json` for the current
+catalogue.
+
+### Steps
+
+1. Ask which Figma file to read (or use the one the user supplied).
+2. **Read primitives.** Use the Figma MCP's variable/styles capability
+   (`get_variable_defs` or equivalent) to read every Variable and style.
+   Map them to DTCG **object** value forms above, and emit them into
+   `tokens/primitives.json`. If the Figma file is a published code-first
+   system (e.g. gluestack-ui), prefer that system's canonical config over
+   the partial Figma export and note the source in
+   `$extensions.source` (cite the upstream commit).
+3. **Read semantics from Figma if present.** If the Figma file has a
+   *Semantic* (or *Alias*) Variable collection that points at the
+   primitives, convert those to DTCG aliases with `{group.token}`
+   references and emit them into `tokens/semantics.json`. Otherwise, skip
+   to step 4.
+4. **Synthesize any missing semantic groups.** For every required group
+   listed above, if no semantic alias was extracted in step 3, add one
+   keyed to the nearest primitive. Use **state.slot nesting** for
+   `action.*` and `input.*` — do not flatten them. Pick alias targets
+   deliberately and record the choice in `$extensions.aliasOf`; do not
+   invent values.
+5. **Build/preserve typography compounds.** If the Figma file has
+   typography styles, convert them to `$type: typography` tokens with
+   aliased sub-properties, and emit them into `tokens/typography.json`.
+   Otherwise, leave the existing `tokens/typography.json` untouched.
+6. **Write/overwrite the three files** with the matching layer markers.
+   Every semantic leaf MUST have a `{group.token}` `$value` that resolves
+   to an existing primitive — the **design-tokens** skill will fail the
+   build if not.
+7. **Tell the user to run the `design-tokens` skill next** to validate +
+   compile.
+
+**Honesty notes:**
+- Figma Variable export via MCP can be incomplete (missing modes, partial
+  collections). If the result is not clean DTCG, say so plainly and
+  recommend the **Tokens Studio for Figma** plugin export as the more
+  reliable path. Never silently emit malformed tokens.
+- If the only source is a code-first system (e.g. gluestack-ui), say so
+  and use the canonical TypeScript/JSON config from that system, not a
+  scraped Figma cover file. Cite the upstream commit in `$extensions.source`.
+- The semantic and typography files are the team's authored contract.
+  **Never delete existing semantic groups or typography compounds** when
+  refreshing primitives — instead, fail loudly if a refresh would orphan
+  an alias (target primitive removed), and ask the user before changing
+  the mapping.
+- **Do not put a top-level `$description` in any of the three files.**
+  Style Dictionary merges all sources into one document and reports
+  collisions on duplicate top-level keys. Per-file documentation belongs
+  in `reports/tokens-report.md`.
+
+---
+
+## Mode B — `frame`  (capture one feature's design intent)
+
+Use per feature, after `spec-author`, to give `design-contract` real data.
+
+Inputs: a feature `id`, and the Figma frame/node URL for that feature.
+
+### ⚡ PRIMARY PATH — REST chunk extract + cache-derived spec (recommended)
+
+When DTCG tokens are already in `tokens/` and the Figma MCP `get_design_context`
+tool is unreliable (Appendix A.9 — hangs/timeouts in programmatic clients), use
+the **REST-first** pipeline. It writes the same `nodes/*.json` cache shape as the
+MCP driver, with full recursive geometry, typography, text, and
+**`boundVariables`** token bindings — **0 MCP**.
+
+```bash
+# 0. Document slice-roots (one REST call per in-scope section)
+#    features/<id>/figma/slice-roots.json — frame + [{ nodeId, name, source }]
+#    (auto-written by figma:extract:rest; edit when adding sections)
+
+# 1. REST chunk extract — needs FIGMA_ACCESS_TOKEN (File content: Read-only) + FIGMA_FILE_KEY
+npm run figma:extract:rest -- --feature <id> --frame <frame-node-id>
+
+# 2. screenshots + assets via Figma REST (never MCP)
+npm run figma:export-image -- --feature <id>
+
+# 3. MANDATORY — derive spec.json + component-checklist.md from cache only (no legacy MCP spec)
+npm run build:spec-from-cache -- <id>
+
+# 4. derive the composition tree from the cache (offline, 0 MCP)
+npm run build:layout -- <id>
+```
+
+After step 3, `spec.json` carries `boundVariables` per node from REST. Run
+`ui-registry-build` then `npm run ui-registry:enrich-tokens -- <id>` to map those
+bindings to semantic `$tokens` in `ui-registry.json`.
+
+**`slice-roots.json` (per feature, required).** Records which Figma sections are
+extracted as separate REST/MCP chunks — one cache file per entry:
+
+```json
+{
+  "frame": "394:8951",
+  "frameName": "08_Product Detail",
+  "sliceRoots": [
+    { "nodeId": "394:9911", "name": "Breadcrumb", "source": "ui-registry" },
+    { "nodeId": "399:4303", "name": "Product Detail", "source": "ui-registry" }
+  ]
+}
+```
+
+`figma:extract:rest` writes this file automatically. `build:spec-from-cache`
+uses it for section order. Shared chrome (nav/footer) lives in
+`features/_shared/figma/nodes/` — record `(shared)` rows in the checklist.
+
+### MCP driver path (when get_design_context works)
+
+`figma-extract` is the **only** skill in the FE branch that touches the Figma
+MCP. Per `docs/figma-single-pass-extract-plan.md` (§11 Phase 3, §12 LOCKED),
+the MCP session is owned by a deterministic Node client, **not** the agent —
+the giant `get_design_context` payloads are written straight to an on-disk
+cache that every downstream skill reads, so `ui-registry-build`,
+`design-contract`, and `fe-implement` make **zero** MCP calls.
+
+Run the driver when MCP is healthy. It makes one `get_metadata(frame)` call for composition
+geometry, then one small `get_design_context` per **slice-root** node (resolved
+from `tokens/ui-registry.json` `$figmaNode` bindings / `slice-roots.json`),
+writing each payload to `features/<id>/figma/nodes/<nodeId>.json`:
+
+```bash
+# 1. THE ONE MCP SESSION — resumable, timeout-safe, concurrency = 1
+npm run figma:extract -- --feature <id> --frame <frame-node-id>
+
+# 2. screenshots + assets via Figma REST (never MCP) — needs FIGMA_ACCESS_TOKEN + FIGMA_FILE_KEY
+npm run figma:export-image -- --feature <id>
+
+# 3. MANDATORY — derive spec.json from cache (same as REST path)
+npm run build:spec-from-cache -- <id>
+
+# 4. derive the composition tree from the cache (offline, 0 MCP)
+npm run build:layout -- <id>
+```
+
+After either path, you still author `notes.md` and the `ui-registry` seed from
+the cached `nodes/*.json` payloads — read the cache, do **not** re-call MCP.
+
+**Shared chrome (nav / footer) is extracted once across all features** into
+`features/_shared/figma/nodes/`, never per feature. When a slice-root is shared
+chrome, point at the `_shared/` cache instead of re-extracting; record it in the
+`component-checklist.md` row as `(shared)` so `validate:figma-extract` looks in
+`features/_shared/figma/nodes/` for it.
+
+**Freshness stamp.** The driver stamps `figmaLastModified` into `run-report.json`
+and every `nodes/*.json` `$meta`. Carry the same value into `spec.json` `$meta`
+and `layout.json` so `fe-implement` can detect a stale cache (Layer D, §10b) and
+`figma:refresh-node` exactly the drifted node.
+
+**Fallback (Appendix A.9):** if the desktop MCP server cannot be driven by the
+out-of-process client (the documented "get_design_context never returns" /
+"No session found" condition), the driver exits 2 with a clear message. Degrade
+to the **agent-driven Large Frame Protocol below** — the SAME chunking and the
+SAME incremental `nodes/*.json` cache, just driven by the agent's own MCP tool
+calls in order. Screenshots/assets still go through `npm run figma:export-image`.
+
+Outputs, under `features/<id>/figma/`:
+- `nodes/<nodeId>.json` — **NEW.** The raw `get_design_context` payload per
+  slice-root (the §5 cache shape: `$meta` + `raw`). This is the source of truth
+  every downstream skill reads instead of re-calling MCP. Resumable: a crash
+  loses at most one node.
+- `layout.json` — **NEW.** The composition tree (`stack`/`grid`/`spacer`/`slot`
+  + token-ref gaps + registry-slug leaves) derived offline by `build:layout`
+  from the cache geometry. Regenerated each run — never hand-edited.
+- `run-report.json` — **NEW.** The "MCP touched once" audit trail: every call,
+  its outcome (`ok`/`cached`/`split`/`timeout`/`failed`), duration, bytes.
+- `spec.json` — structured design data: the element tree; layout per container
+  (direction, gap, padding, alignment); per-element measurements; the component
+  states present in the design. Assembled from the `nodes/*.json` cache (not a
+  separate MCP pass).
+- `component-checklist.md` — **mandatory human-readable list** of every named
+  element in `spec.json` that `design-contract` must document in §2 anatomy.
+  Format (append a row for each named entity, hierarchically indented):
+  ```
+  # Figma Component Checklist — <feature-id>
+  Generated from spec.json. design-contract MUST cover every row below in §2.
+
+  ## Navigation
+  - [ ] Promo Bar
+  - [ ] Top Nav  (content: Welcome text · Follow Us social icons · Eng/USD dropdowns)
+  - [ ] Middle Nav  (content: Logo · Search bar · Cart/Wishlist/User icons)
+  - [ ] Bottom Nav  (content: All Category dropdown · Track Order · Compare · ...)
+
+  ## Hero Widgets
+  - [ ] Main Hero — Xbox Consoles
+  - [ ] Small Widget 1 — Google Pixel 6 Pro
+  ...
+  ```
+  This file is the downstream "do not miss" contract for `design-contract`.
+  `validate:figma-coverage` uses `spec.json` (not this file) for machine
+  enforcement, but this checklist is the human-readable companion.
+- `reference-<section>.png` — one real screenshot **per in-scope section**,
+  exported via Figma REST by `npm run figma:export-image` (never the full frame,
+  never an MCP screenshot). These are the **real** baselines the Phase 5b visual
+  diff compares the app against — a placeholder/empty PNG is a hard fail in
+  `validate:figma-extract`.
+- `notes.md` — anything the structured data cannot capture.
+- (per asset) downloaded SVG/PNG files saved to `public/icons/` or `public/images/`
+  and listed in `notes.md` under "Downloaded assets".
+
+## HARD RULE — No prose-collapsed sections (NON-NEGOTIABLE)
+
+This is the single most common cause of Figma components being silently missed
+in contract and implementation. **It is forbidden in all circumstances.**
+
+**Prose-collapsing** means writing a section's visual sub-elements as a single
+summary string in the `content` field instead of as named objects in structured
+arrays. Example:
+
+```json
+// ✗ FORBIDDEN — prose-collapsed. Sub-elements are invisible to all downstream
+// tools (design-contract, validate:figma-coverage, governance-gate).
+{ "name": "Newsletter", "content": "Email form with brand logos" }
+
+// ✓ REQUIRED — structured. Every sub-element is named and discoverable.
+{
+  "name": "Newsletter",
+  "layers": [
+    { "name": "Copy Block",  "content": "Heading text · body text" },
+    { "name": "Form Card",   "content": "Email input · Subscribe button + arrow icon" },
+    { "name": "Divider",     "content": "Horizontal rule 424px" },
+    { "name": "Brand Logos", "content": "Google · Amazon · Philips · Toshiba · Samsung (72×72, opacity-60)" }
+  ]
+}
+```
+
+**The rule:**
+- `content` as a **string** is allowed ONLY on leaf-level entries that represent
+  a single TEXT node (e.g., a label, a heading, a caption). It must be the
+  literal text string the node renders, or a `·`-separated list of the text
+  strings inside a simple text group.
+- `content` as a **string** is FORBIDDEN on any section or sub-element that
+  contains multiple visual child frames, groups, or components. Those children
+  MUST be enumerated as named objects in `layers`, `widgets`, `columns`, or
+  `banners`.
+- After writing spec.json, run `validate:figma-coverage` — its Check 2 scans
+  for prose-collapsed sections and exits non-zero if any are found. A non-zero
+  exit means the extraction is incomplete and must be re-done.
+
+**How to know which array to use:**
+| Child type in Figma | Array to use in spec.json |
+|---------------------|--------------------------|
+| Horizontal nav tiers, stacked content rows | `layers` |
+| Side-by-side widgets (hero panels, banners) | `widgets` |
+| Vertical grid/table columns | `columns` |
+| Promotional banners | `banners` |
+| Everything else | `layers` (default) |
+
+---
+
+Steps:
+1. Use the Figma MCP context/metadata capability (`get_design_context`,
+   `get_metadata`) to read the frame's structure and measurements. Walk the
+   **entire node tree recursively** — every GROUP, FRAME, COMPONENT, INSTANCE,
+   VECTOR, TEXT, RECTANGLE, and ELLIPSE. Do not skip hidden layers that are
+   visible in the design (check `visible !== false`).
+   For every section node, walk **one level deeper** to enumerate its named
+   child frames/groups. Each named child becomes a named object in the
+   appropriate structured array. Never collapse children into a prose string.
+
+   ### ⚠ LARGE FRAME PROTOCOL — mandatory when the full frame exceeds MCP limits
+
+   Full-page Figma frames (product detail, homepage, checkout) routinely exceed
+   the `get_design_context` token budget and return an error or a saved file
+   that is too large to read in one pass. **Do not retry on the full frame.**
+   Doing so will always fail or truncate — you will get an incomplete tree and
+   will miss sections, which leads to spec.json prose-collapse or omissions.
+
+   When the full frame fails, use this four-step section-by-section approach:
+
+   **Step 1a — Get section node IDs (never omit this step)**
+   Call `get_metadata` on the full frame node ID. This returns the frame's
+   top-level children with their `id` and `name` without the deep subtree.
+   Extract the node ID and name of every top-level child (Nav, Breadcrumb,
+   ProductContent, Tabs, RelatedProducts, Footer, etc.).
+
+   **Step 1b — Call `get_design_context` per section**
+   For each top-level section node ID from step 1a, call `get_design_context`
+   with that section's node ID (not the parent frame). Each section fits within
+   the budget. Read the complete output for each section before moving to the
+   next. Do not batch-read multiple sections — read one, extract all named
+   children, then proceed to the next.
+
+   **Step 1c — Build the section inventory**
+   From each section's `get_design_context` response, extract:
+   - Every named `data-name` element and its `data-node-id`
+   - Layout classNames (flex direction, gap, padding, alignment)
+   - Typography classNames (font size, weight, line-height)
+   - Colour variables (`var(--token-name, #fallback)` — extract the token name)
+   - Dimensions from `width` / `height` inline styles
+   Record these as named structured objects in `spec.json` — never as prose.
+
+   **nodeId is MANDATORY on every named object in spec.json.**
+   Every entry in `sections[]`, `layers[]`, `widgets[]`, `columns[]`, and
+   `banners[]` MUST include a `"nodeId"` field taken from the `data-node-id`
+   attribute on the corresponding element in the `get_design_context` response.
+   This is the key that flows downstream: spec.json → contract.md §2 → fe-implement
+   per-component extraction. Without it, `design-contract` cannot write nodeIds
+   into §2, and `fe-implement` cannot call `get_design_context` per component.
+
+   Required shape for every named spec.json entry:
+   ```json
+   {
+     "name": "ProductCard",
+     "nodeId": "394:7726",
+     "width": 234,
+     "height": 320,
+     "layout": "flex column",
+     "gap": "8px",
+     "padding": "15px",
+     "layers": [ ... ]
+   }
+   ```
+   An entry without `"nodeId"` is incomplete. Do not write spec.json until
+   every named element has its nodeId recorded.
+
+   **Step 1d — Screenshot each section separately**
+   Call `get_screenshot` with `contentsOnly: true` on each section node for
+   a cropped visual reference. Do NOT screenshot the full frame — the image
+   will be too small to read or will time out. Save one PNG per section:
+   `features/<id>/figma/reference-<section-name>.png`.
+
+   After completing steps 1a–1d for all sections, proceed to step 2 with the
+   complete multi-section spec data. The output spec.json must cover every
+   section; a section present in step 1a but absent from spec.json is a
+   hard error — return to step 1b for that section before writing any outputs.
+2. Use the Figma MCP screenshot capability (`get_screenshot`) to export
+   `reference.png` at the frame's native resolution (2× if possible).
+3. **Token mapping — exact, not approximate (NON-NEGOTIABLE).**
+   For **every** measurement in the frame, map it to the **exact** matching
+   semantic token from `reports/tokens-report.md`:
+   - A match is exact when the token's resolved px value equals the Figma
+     measurement to within 1px (floating-point rounding only).
+   - **"Nearest token" is forbidden.** Never write a token whose resolved
+     value differs from the Figma measurement. If `space.md = 16px` and
+     Figma shows 20px, `space.md` is NOT a valid mapping — it is an
+     approximation and will cause visual drift.
+   - For colours: the exact Figma colour hex must match the token's resolved
+     hex exactly. No "visually close" substitutions.
+   - Record in `notes.md` under "Token mapping" a table:
+     `| Node path | Property | Figma value | Token used | Resolved value | Exact? |`
+     Every row must have Exact? = YES.
+   - **If ANY measurement has no exact matching token — STOP immediately.**
+     Do not proceed to write outputs or advance to `design-contract`.
+     Instead, produce a **Missing Tokens Action Report** in
+     `features/<id>/figma/missing-tokens-report.md` using this format:
+
+     ```
+     # Missing Tokens — <feature id>
+     Generated: <date>
+     
+     The following Figma measurements have no exact matching design token.
+     The design system must be extended before this feature can be contracted.
+     
+     ## Action required (designer)
+     
+     For each row below, add the listed token to `tokens/semantics.json`
+     (or `tokens/primitives.json` for a new scale step), then run:
+         npm run tokens:validate
+         npm run tokens:validate-figma-alignment
+         npm run tokens:build
+     Once all rows are resolved, re-run figma-extract for this feature.
+     
+     | # | Node path | Property | Figma value | Closest existing token | Closest resolved value | Recommended new token |
+     |---|-----------|----------|-------------|------------------------|------------------------|-----------------------|
+     | 1 | Footer/Col1 | gap | 20px | space.md | 16px | space.lg-alt = 20px |
+     ...
+     
+     ## How to allow raw values (last resort)
+     
+     If the designer confirms these values are intentional one-offs and should
+     NOT be added to the token system, a human may unblock the pipeline by
+     setting in `features/backlog.yaml` for this feature:
+         allow_raw_values: true
+     
+     This flag is a deliberate human override. It allows `design-contract`
+     and `feature-implement` to proceed with `allow-raw` annotations for
+     these exact values. The governance gate will verify every `allow-raw`
+     comment matches this report.
+     ```
+
+     Then output to the user:
+     ```
+     ⚠ MISSING TOKENS — pipeline blocked
+
+     <N> Figma measurement(s) in frame "<frame name>" have no exact design token:
+       • <Node path>: <property> = <value> (closest: <token> = <resolved>)
+       ...
+
+     The design system is incomplete for this feature.
+
+     Designer action: open features/<id>/figma/missing-tokens-report.md
+     and add the listed tokens to tokens/semantics.json, then re-run:
+       npm run tokens:build
+       /figma-extract (frame mode, this feature)
+
+     To skip token addition and allow raw values instead (last resort):
+       Set  allow_raw_values: true  in the feature's backlog.yaml entry.
+       A human must set this flag — Claude Code will not set it automatically.
+     ```
+     **Do not write `spec.json`, `reference.png`, or `notes.md` until all
+     tokens are resolved OR `allow_raw_values: true` is set in backlog.yaml.**
+     If `allow_raw_values: true` is already set, proceed — record all
+     unmapped measurements in `notes.md` under "Missing tokens (allow-raw
+     approved)" with their exact Figma values, then continue to step 4.
+4. **Download ALL visual assets — exhaustive scan (NON-NEGOTIABLE).**
+   Scan the entire node tree from step 1. For every node of type IMAGE, VECTOR,
+   COMPONENT, INSTANCE, or RECTANGLE-with-image-fill that represents a visual
+   asset rendered in the final UI:
+   - **Icons and SVG assets** (VECTOR, icon components, decorative graphics):
+     Export as SVG via Figma REST API:
+     `GET /v1/images/{file_key}?ids={node_id}&format=svg&svg_include_id=true`
+     Save to `public/icons/<descriptive-name>.svg`.
+   - **Photos and raster images** (RECTANGLE with image fill, product photos,
+     hero images, banners):
+     Export as PNG at 2× scale:
+     `GET /v1/images/{file_key}?ids={node_id}&format=png&scale=2`
+     Save to `public/images/<descriptive-name>.png` or `.jpg`.
+   - **Brand marks, logos, badges** (App Store, Google Play, payment icons,
+     social media icons, brand logos):
+     Export as SVG. If rasterised, export as PNG at 2×.
+     Save to `public/icons/` with a prefix matching the brand:
+     `badge-google-play.svg`, `icon-visa.svg`, `logo-clicon.svg`.
+   - **Naming convention:** kebab-case, descriptive, unique.
+     `icon-truck.svg`, `icon-return-arrow.svg`, `badge-google-play.svg`,
+     `hero-xbox-controller.png`. Never `node_123456.png`.
+   - **Never substitute.** The following are all forbidden regardless of
+     difficulty:
+     - Unicode emoji or symbol characters (`🍎`, `★`, `✕`, `▶`, `→`)
+     - Text labels in place of image files (`<span>Google Play</span>`)
+     - Hand-coded SVG paths approximating a brand icon (the real SVG from
+       Figma is always authoritative)
+     - Colored `<div>` CSS shapes in place of a logo
+     - Next.js `<Image>` pointing to a placeholder or missing file
+   - **STOP** if any export call fails. Report the node ID, node name, and
+     HTTP error. Do not use a substitute. Wait for the user to resolve the
+     issue (e.g. access a shared library, grant API token scope).
+   - Record every asset in `notes.md` under "Downloaded assets":
+     ```
+     | Node ID | Node name | Type | File saved | Dimensions |
+     ```
+   - If a node cannot be exported for a legitimate technical reason (master
+     in inaccessible shared library, protected file), record it under
+     "Assets requiring manual download" with instructions for the user.
+     **STOP immediately** if this section is non-empty — do not proceed to
+     `design-contract`.
+5. **Verify completeness before writing outputs.**
+   After downloading, re-read the node tree and the "Downloaded assets" table
+   side by side. Every visual asset node must have an entry. If any visual
+   asset node has no corresponding entry → the scan was incomplete → repeat
+   step 4 for the missing nodes.
+   Run `ls public/icons/ public/images/` and confirm every listed path exists.
+   Any listed path that does not exist on disk → re-download before continuing.
+
+5a. **Write `features/<id>/figma/asset-manifest.json` (MANDATORY).**
+    After completing step 5, write a machine-readable manifest of every visual
+    asset found in the frame. This file is the bridge between Figma extraction
+    and the filesystem verification that runs at the governance gate.
+
+    Format:
+    ```json
+    {
+      "$meta": {
+        "feature": "<id>",
+        "frame": "<node-id>",
+        "generatedAt": "<YYYY-MM-DD>"
+      },
+      "assets": [
+        {
+          "nodeId":     "<figma-node-id>",
+          "nodeName":   "<human-readable name from Figma>",
+          "figmaUrl":   "<http://localhost:3845/assets/... or REST API URL>",
+          "localPath":  "public/icons/<name>.svg",
+          "type":       "svg | png | jpg",
+          "dataSource": "static | dynamic"
+        }
+      ]
+    }
+    ```
+
+    `dataSource` rules:
+    - `"static"` — the exact Figma asset is always rendered (logos, icons,
+      badges, payment marks, app-store badges, decorative illustrations).
+      `validate:assets` will verify these files exist on disk.
+    - `"dynamic"` — the asset comes from a database / API at runtime (product
+      photos, user avatars, category images). The Figma value is an example
+      only. `validate:assets` skips these — they are listed so the contract
+      knows what content type to expect at each location.
+
+    **After writing the manifest, run the mandatory checkpoint:**
+
+    > ### ✦ MANDATORY CHECKPOINT — Asset files on disk
+    > **Run this Bash command now as a tool call. Do not hand off to
+    > design-contract until it exits 0.**
+    > ```bash
+    > npm run validate:assets -- <id>
+    > ```
+    > Reads `asset-manifest.json` and verifies every static asset exists on
+    > disk and is non-empty.
+    >
+    > | Exit code | Action |
+    > |-----------|--------|
+    > | **0** | All static assets confirmed — proceed to step 6 |
+    > | **1 (missing/empty files)** | **STOP.** Re-download the flagged assets using the `figmaUrl` from the manifest, then re-run. Do not proceed to step 6. |
+    > | **2 (no manifest)** | The manifest was not written — write it now, then re-run. |
+
+6. **Populate `tokens/ui-registry.json`** with any new screens or components
+   the frame introduces. See "UI registry — sibling contract" below for the
+   shape and rules. The component states observed in step 1 become each
+   entry's `$states` array. Re-run `npm run ui-registry:build` so the
+   test-id constants in `tokens/build/test-ids.ts` and the glossary in
+   `reports/ui-registry-glossary.md` are refreshed before the next skill
+   consumes them. These paths flow downstream:
+   - `design-contract` lists them in its §1a "UI registry entries"
+     section (the contract's testable surface).
+   - `feature-implement` renders `data-testid={ids.<path>}` on the
+     corresponding element using the typed accessor.
+   - `bdd-scaffold` selects elements by `getByTestId(ids.<path>)` in
+     step definitions.
+   - `governance-gate` runs `ui-registry:check-sync` to require that
+     every path you register here is actually rendered by the end of
+     implementation.
+7. **Generate `component-checklist.md` (MANDATORY — do as a file write, not
+   a note to self).** After walking the full node tree, write
+   `features/<id>/figma/component-checklist.md` enumerating every named
+   section and sub-element. Format:
+   ```markdown
+   # Figma Component Checklist — <feature-id>
+   Auto-generated by figma-extract. design-contract MUST document every row
+   below in §2 anatomy. validate:figma-coverage enforces this mechanically.
+
+   ## <Section Name>  (nodeId: 391:6653)
+   - [ ] <Layer/Widget/Column/Banner name>  (nodeId: 394:7726)  (content: "<content string verbatim>")
+   ...
+   ```
+   Include every entry from `spec.json`'s `sections[].name`,
+   `sections[].layers[].name`, `sections[].widgets[].name`,
+   `sections[].columns[].name`, `sections[].banners[].name`.
+   **Every checklist row MUST include `(nodeId: X:Y)` — this is what
+   `design-contract` copies into §2 anatomy and what `fe-implement` uses to
+   call `get_design_context` per component. A checklist row without a nodeId
+   is incomplete and will cause drift during implementation.**
+   For layers/widgets with a `content` field, quote it verbatim — this makes
+   interactive sub-elements (dropdowns, buttons listed in content strings)
+   explicit and uncollapsible for `design-contract`.
+
+   After writing the file, print its full contents to the user output so the
+   list is visible and cannot be silently skipped downstream. End with:
+
+   > ⚠ design-contract MUST cover every unchecked item above.
+   > `npm run validate:figma-coverage -- <id>` will enforce this mechanically.
+
+8. Write the remaining output files under `features/<id>/figma/`
+   (`spec.json`, `reference.png`, `notes.md`).
+
+9. **Self-validate spec.json before handing off — run now as a Bash tool call:**
+
+   > ### ✦ MANDATORY CHECKPOINT — Prose-collapse detection
+   > **Run this Bash command now. Do not hand off to design-contract until it exits 0.**
+   > ```bash
+   > npm run validate:figma-coverage -- <id>
+   > ```
+   > Check 2 of this script scans spec.json for prose-collapsed sections — sections
+   > where visual sub-elements were collapsed into a `content` string instead of
+   > being written as named objects in `layers`/`widgets`/`columns`/`banners`.
+   >
+   > | Exit code | Action |
+   > |-----------|--------|
+   > | **0** | spec.json is structurally sound — hand off to design-contract |
+   > | **non-zero** | **STOP.** Every flagged section in the output must be re-walked in Figma. Enumerate each named child frame/group as a structured entry in the correct array. Then re-write spec.json, regenerate component-checklist.md (step 7), and re-run this command. Do not proceed to design-contract with prose-collapsed sections. |
+
+   Note: contract.md does not exist yet at this stage, so Check 1 (named-entity
+   coverage) will not run — only Check 2 (prose-collapse) fires here. That is
+   the correct and expected behaviour.
+
+10. **Validate the cache + composition tree — run now as Bash tool calls.**
+
+   > ### ✦ MANDATORY CHECKPOINT — Extraction cache + layout
+   > **Run these now. Do not hand off to `ui-registry-build` / `design-contract`
+   > until all three exit 0.**
+   > ```bash
+   > npm run build:spec-from-cache -- <id>   # derive spec.json + checklist from nodes/*.json (mandatory after REST or MCP extract)
+   > npm run validate:figma-extract -- <id>    # every checklist nodeId has a nodes/*.json (or _shared) cache; no placeholder reference.png; figmaLastModified consistent
+   > npm run build:layout         -- <id>      # (re)derive layout.json from the cache, offline
+   > npm run validate:layout      -- <id>      # every leaf slug resolves in ui-registry; every gap/padding is a token; only allowed node types/hints
+   > ```
+   >
+   > | Exit code | Action |
+   > |-----------|--------|
+   > | **0** | The on-disk extraction is complete and the composition tree is valid — downstream skills can read disk-only (0 MCP). |
+   > | **non-zero** | **STOP.** `validate:figma-extract` names the uncovered nodeIds — `figma:refresh-node` each (or point it at `_shared/`). `validate:layout` names bad slugs / raw-px gaps — fix `ui-registry` `$figmaNode` bindings or the spacing token, then re-run `build:layout`. |
+
+---
+
+## Mode C — `all-frames`  (bulk extraction of every frame in a file)
+
+Use when the user wants to extract all frames from a Figma file at once, audit
+what was missed, or ensure complete coverage before a full re-implementation.
+
+Inputs: a Figma file key (e.g. `XZYoUnFtfWZJQJIJUIvqHs`).
+
+Outputs:
+- One set of `spec.json` + `reference.png` + `notes.md` per top-level frame,
+  written to `features/<frame-slug>/figma/`.
+- A `reports/figma-all-frames.md` coverage report listing every frame, its
+  node ID, and extraction status (complete / partial / failed).
+
+Steps:
+1. Use `get_metadata` or equivalent to list every top-level FRAME in the file.
+   Record the frame name, node ID, and approximate dimensions.
+2. For each frame (process sequentially — one at a time to avoid MCP timeouts):
+   a. Run Mode B steps 1–7 for that frame, writing outputs to
+      `features/<slug>/figma/` where `<slug>` is the kebab-case frame name
+      (e.g. `01-homepage`, `07-shop-page`, `15-checkout-form`).
+   b. On any failure (MCP timeout, export error, missing asset), record the
+      error in `reports/figma-all-frames.md` and continue to the next frame.
+      Do not stop the entire run for a single frame failure.
+3. Write `reports/figma-all-frames.md`:
+   ```
+   | Frame | Node ID | Status | Assets downloaded | Missing tokens | Notes |
+   ```
+4. Report summary to the user: total frames, successfully extracted, partially
+   extracted (missing assets), failed.
+
+**Hard limit:** Never process more than one frame per MCP call. If a frame's
+node tree is very large (> 500 nodes), split it into sections and extract each
+section separately, merging results into a single `spec.json`.
+
+**Asset extraction honesty rules:**
+- If the Figma file uses a node type of `RECTANGLE` with an image fill
+  (a rasterised photo), export it as PNG at 2× scale.
+- If a node is a component instance whose master is in a shared library
+  file you cannot access, note it and ask the user for the SVG/PNG export.
+- `notes.md` must list every visual element in the frame and explicitly say
+  either "downloaded → public/..." or "not exportable — reason".
+- `design-contract` (downstream) MUST reference the actual file paths, not
+  describe icons in words. If no asset path is listed in `notes.md`, the
+  contract cannot be written and `design-contract` must stop and report.
+
+---
+
+## UI registry — sibling contract
+
+Beside the DTCG token files (`tokens/primitives.json`, `tokens/semantics.json`,
+`tokens/typography.json`) lives **`tokens/ui-registry.json`** — the
+versioned source of truth for **screen** and **component** paths used in
+Gherkin scenarios. It is specified by
+`tokens/templates/PRD-Executable-Requirements-Gherkin-Component-Paths.docx.md`.
+
+**Why a sibling, not a token group:** a design token resolves to a *value*
+(a colour, a number) and is processed by Style Dictionary. A component path
+resolves to an *identity* (a thing with structure and states) — it is not a
+value. Same path-as-contract discipline, different storage.
+
+### Shape (PRD §4.2)
+
+```json
+{
+  "$metadata": { "version": "x.y.z", "description": "...", "owner": "..." },
+  "screen": {
+    "<feature>": {
+      "<screenKey>": { "$description": "..." }
+    }
+  },
+  "component": {
+    "<feature>": {
+      "<screenKey>": {
+        "<componentKey>": {
+          "$description": "...",
+          "$screen": "screen.<feature>.<screenKey>",
+          "$states": ["default", "disabled", "loading"]
+        }
+      }
+    }
+  }
+}
+```
+
+### Grammar (PRD §4.1, enforced by `npm run ui-registry:validate`)
+
+```
+<path>    ::= <domain> "." <segment> ( "." <segment> )+
+<domain>  ::= "screen" | "component"
+<segment> ::= [a-z][a-zA-Z0-9]*                 # lowerCamelCase, no underscores/dashes
+```
+
+Other validator rules: every leaf needs a `$description`; every component
+`$screen` must resolve to a registered screen path; `$states` must be a
+non-empty array of distinct lowerCamelCase strings.
+
+### Build artifacts
+
+`npm run ui-registry:build` emits:
+- `tokens/build/test-ids.ts` — `testIds` (flat path→id map) and `ids` (nested
+  tree). Component code imports these and renders them on the real element
+  (`data-testid={ids.component.checkout.cart.checkoutButton}`).
+- `reports/ui-registry-glossary.md` — human-readable table of every screen
+  and component with description, parent screen, states, and generated
+  test-id.
+
+### Authoring contract
+
+- **Never delete a registered path** without checking call sites. The path
+  is a contract — Gherkin scenarios, tests, and component code reference it.
+  Deprecate via `$deprecated: true` (future) before removal.
+- **Do not write test-ids by hand.** They are derived from the path
+  (dots → dashes). Always import from `tokens/build/test-ids.ts`.
+- **When a feature is approved**, the example seeds (`[EXAMPLE] …` paths
+  under `screen.checkout.*` and `component.checkout.*`) should be deleted
+  once the registry has real entries — they exist only to keep the pipeline
+  emitting non-trivial output during the PoC.
+
+## Success criteria
+- Mode A: `tokens/design-tokens.json` exists and is valid JSON in DTCG shape.
+- Mode B: `spec.json`, `notes.md`, `component-checklist.md`, and the
+  `nodes/<nodeId>.json` cache (one per slice-root, or a `_shared/` pointer) all
+  exist under `features/<id>/figma/`; `layout.json` and `run-report.json` are
+  written; `reference-<section>.png` are **real** REST exports (not placeholders);
+  and `validate:figma-extract`, `build:layout`, `validate:layout` all exit 0.
+
+## Failure handling
+If the Figma MCP is unavailable, or the file/frame URL is wrong, **stop and
+report**. Do not invent measurements, tokens, or images.

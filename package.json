@@ -1,0 +1,40 @@
+{
+  "name": "mltravel-backend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "start:dev": "nest start --watch",
+    "start": "node dist/main",
+    "build": "nest build",
+    "typecheck": "tsc --noEmit",
+    "api-registry:validate": "node scripts/build-api-registry.mjs --validate",
+    "openapi:assemble": "node scripts/assemble-openapi.mjs",
+    "openapi:validate": "node scripts/assemble-openapi.mjs && node scripts/validate-openapi.mjs",
+    "test:api": "vitest run --config vitest.config.api.ts",
+    "gate:api": "npm run typecheck && npm run openapi:validate && npm run api-registry:validate && npm run test:api"
+  },
+  "dependencies": {
+    "@nestjs/common": "^11.1.27",
+    "@nestjs/core": "^11.1.27",
+    "@nestjs/platform-express": "^11.1.27",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.15.1",
+    "js-yaml": "^4.1.0",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2"
+  },
+  "devDependencies": {
+    "@apidevtools/swagger-parser": "^10.1.1",
+    "@nestjs/cli": "^11.0.23",
+    "@nestjs/testing": "^11.1.27",
+    "@swc/core": "^1.11.24",
+    "@types/express": "^5.0.3",
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^22.10.2",
+    "@types/supertest": "^7.2.0",
+    "supertest": "^7.2.2",
+    "typescript": "^5.7.2",
+    "unplugin-swc": "^1.5.5",
+    "vitest": "^3.2.4"
+  }
+}
