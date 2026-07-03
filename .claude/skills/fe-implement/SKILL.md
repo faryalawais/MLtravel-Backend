@@ -30,6 +30,8 @@ BE must be fully implemented and the OpenAPI spec published before this starts.
   every chain state (when feature has animation twins)
 - `features/<fe-jira-id>/figma/motion-diffs.json` — per-layer Smart Animate
   deltas per transition (when feature has animation twins)
+- `features/<fe-jira-id>/figma/motion-spec.json` — when present (Track B):
+  keyframe targets + designer-confirmed timing per `componentPath`
 - `features/<parent-id>/<parent-id>.feature` (`@fe` scenarios only)
 - `docs/openapi/paths/<be-jira-id>.yaml` — the published BE API contract
 - `tokens/ui-registry.json` — component paths and token bindings
@@ -158,7 +160,17 @@ FOR EACH component in the current slice/task:
   5. Map every recorded value to its exact design token from tokens-report.md.
      If ANY value has no exact token match → STOP. Follow the missing-tokens
      protocol (see figma-extract skill). Do not approximate.
-  6. ONLY after steps 1–5 are complete → open the .tsx file and implement
+  6. **Motion (dual track — use A when available, else B):**
+     - **Track A (primary):** closed chain in `motion-chains.json` for this slice
+       → follow "Motion implementation" checklist below (runners, helpers, fixtures).
+     - **Track B (supplementary):** no closed chain but `motion-spec.json` +
+       contract §5b defines this `componentPath` → implement keyframes using
+       `timing.durationToken` / `easingToken` (or confirmed `durationMs` when
+       `designerConfirmed: true`); honour `implementation.reducedMotion` via
+       `prefers-reduced-motion`; BDD asserts outcome not ms timing.
+     - **Both present:** Track A is authoritative for code; §5b is designer timing
+       reference only — do not contradict closed chain diffs.
+  7. ONLY after steps 1–6 are complete → open the .tsx file and implement
 
   BLOCK conditions (do not write code if any apply):
   - nodeId is missing from contract.md §2 → re-run design-contract
@@ -191,23 +203,27 @@ yourself reusing `max-w-[424px]`, a shared accent-bar colour, or a centered
 footer column from a sibling → stop and read the Feature grid (or current
 slice) cache first.
 
-**Motion implementation (animated desktop slices only).** Authoritative docs:
-`docs/motion-guideline.md` (patterns + examples) ·
-`docs/motion-pipeline-plan.md` step 17.
+**Motion implementation (animated desktop slices only).** Two tracks may coexist;
+**Track A (`motion-chains.json`) wins when a closed chain exists.** Track B
+(`motion-spec.json` + contract §5b) applies when no closed chain covers this
+component. Authoritative docs: `docs/motion-guideline.md` (Track A) ·
+`docs/motion-pipeline-plan.md` step 17 · project `motion-spec` templates (Track B).
 
 **Pre-code motion checklist (write in chat before opening `.tsx` for this slice):**
 ```
+□ Identify track: closed motion-chains chain? → Track A. Else motion-spec §5b? → Track B
 □ Do NOT read tokens/MOTION-SPEC.md
-□ motion-chains.json — chain for this slice: status "closed" (or subgraph closed)
-□ motion-diffs.json — all diffs for this chain / subgraphId
-□ motion-state-poses.json — per-state translateYpx; initialRender staticTwin vs animationState1
-□ Every transition: trigger, delayMs, durationToken, easingToken from motion-chains
+□ Track A — motion-chains.json — chain for this slice: status "closed" (or subgraph closed)
+□ Track A — motion-diffs.json — all diffs for this chain / subgraphId
+□ Track A — motion-state-poses.json — per-state translateYpx; initialRender staticTwin vs animationState1
+□ Track A — Every transition: trigger, delayMs, durationToken, easingToken from motion-chains
+□ Track B — motion-spec.json entry for this componentPath; duration/easing from confirmed timing
 □ Every moving layer: testId in ui-registry.json (component.*.motion.*)
 □ Custom translateY px (custom: true) → constants/motion.constants.ts only — never inline in TSX
 □ If initialRender is staticTwin: pre-hover layout = flex/natural flow matching static frame — NOT animation state 1
 □ Staged-sequence timing: cumulative duration+delay between steps — not delay × stepIndex
 □ If any state node missing from nodes/ → figma:refresh-node before coding
-□ contract.md **Motion** block matches motion-chains.json (pattern, runner, trigger)
+□ contract.md **Motion** block matches motion-chains.json (Track A) OR §5b matches motion-spec (Track B)
 □ Bind each motion-diffs row → helper + data-testid — not sibling TSX
 □ gifRef ambient → asset-manifest path + <Image unoptimized /> — no hover handler
 □ reference-*-animation-state-*.png available for Step 7 spot-check
@@ -620,6 +636,8 @@ EOF
   single-session driver in `figma-extract` already did that once and cached it
   (`docs/figma-single-pass-extract-plan.md` §6, §12).
 - **Motion wiring comes from JSON only.** Never read `tokens/MOTION-SPEC.md`.
-  Pattern, timing, and layer helpers must trace to `motion-chains.json` +
-  `motion-diffs.json`. Wrong motion → re-extract + `build:motion-from-cache`,
-  not sibling-section cloning or ad-hoc CSS.
+  **Track A (primary):** pattern, timing, and layer helpers trace to
+  `motion-chains.json` + `motion-diffs.json`. Wrong Track A motion → re-extract +
+  `build:motion-from-cache`, not sibling-section cloning or ad-hoc CSS.
+  **Track B (supplementary):** when no closed chain, use `motion-spec.json` +
+  contract §5b; wrong timing → update motion-spec + re-run design-contract.

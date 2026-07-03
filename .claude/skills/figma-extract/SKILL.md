@@ -335,6 +335,41 @@ Motion is **not done** until every animation twin has a **closed** chain — mea
 | **Interactive** | `interactions[]` on `*-animation` variant chain | Chain walk + `motion-chains.json` + `motion-diffs.json` | `useOneWayMotion` + pattern runner + helpers |
 | **Ambient** | `gifRef` on IMAGE fill (often on **static** slice) | `asset-manifest.json` + disk file | `<Image unoptimized />` — no hover handler |
 
+#### Dual motion tracks (both may coexist — do not pick one globally)
+
+| Track | Artifacts | Role | Gate |
+|-------|-----------|------|------|
+| **A — Prototype chains (primary)** | `motion-chains.json`, `motion-diffs.json`, `motion-state-poses.json`, `chain-walk-report.json` | Machine-extracted Smart Animate from REST/MCP prototype `interactions[]`; **authoritative for `fe-implement`** when `status: "closed"` | `npm run validate:motion-chains -- <id>` |
+| **B — Designer motion-spec (supplementary)** | `motion-spec.json` (+ optional `tokens/templates/motion-spec.*.json` in project) | MCP variant keyframe inventory on Animations page; **designer-confirmed** duration/easing when REST lacks timing or for inferred overlays | `npm run validate:motion-spec -- <id>` when file exists |
+
+**Rules:**
+- **Track A wins for code** when a closed chain exists for a component — implement runners/helpers from `motion-diffs.json`.
+- **Track B** fills gaps: timing sign-off (`designerConfirmed: true`), pre-chain inventory, or components without REST interactions.
+- **Never** read `tokens/MOTION-SPEC.md` — Tracks A + B JSON only.
+- Human overview: `docs/motion-guideline.md` (Track A) · project `motion-spec` templates (Track B).
+
+#### Track B — motion-spec inventory (MCP, when Animations page exists)
+
+Figma prototype **timing is not in REST file content**. MCP **can** extract **variant keyframes** — static frames as `Property 1=Default`, `Property 1=2`, … on the Animations page.
+
+**Procedure (MCP, during extract — runs alongside Track A, not instead of it):**
+1. `get_metadata` on the Animations page canvas → list component-set frames and variant symbol `nodeId`s.
+2. For each in-scope animated component (matches `component.*` in registry or checklist):
+   - `get_design_context` on **each variant** `nodeId` (sequential).
+   - Diff layout between variants: `top`, `left`, `opacity`, visibility of child layers.
+   - Record trigger + duration/easing as **TBD** unless supplied in `notes.md` or Figma Variables (`motion.*`).
+3. Write `features/<id>/figma/motion-spec.json` using `tokens/templates/motion-spec.template.json` (when present in project).
+4. Append to `notes.md`:
+   ```markdown
+   ## Motion spec (Track B)
+   | Component | Variants (nodeIds) | Keyframe summary | Timing confirmed? |
+   ```
+5. Run `npm run validate:motion-spec -- <id>` when any animated component is in scope and the file exists.
+
+**Honesty:** `timing.designerConfirmed: false` is valid in `motion-spec.json` but **blocks `design-contract`** until the designer confirms duration/easing. Track A chain closure is still required for prototype-driven slices unless an approved `motion-inferred-overlays.json` closes the chain.
+
+Reference pilot: `tokens/templates/motion-spec.example.json` (when present in project repo).
+
 #### Mandatory extract checklist (per `*-animation` slice-root)
 
 `/figma-extract` is **not complete** for a feature with animation twins until **every row** passes:
@@ -877,7 +912,10 @@ Steps:
    > `npm run validate:figma-coverage -- <id>` will enforce this mechanically.
 
 8. Write the remaining output files under `features/<id>/figma/`
-   (`spec.json`, `reference.png`, `notes.md`).
+   (`spec.json`, `reference.png`, `notes.md`, `motion-spec.json` when Track B applies).
+
+   If the feature has animation twins, also ensure Track A artifacts exist before handoff:
+   `chain-walk-report.json`, `motion-chains.json`, `motion-diffs.json`, `motion-state-poses.json`.
 
 9. **Self-validate spec.json before handing off — run now as a Bash tool call:**
 
@@ -901,14 +939,16 @@ Steps:
 
 10. **Validate the cache + composition tree — run now as Bash tool calls.**
 
-   > ### ✦ MANDATORY CHECKPOINT — Extraction cache + layout
+   > ### ✦ MANDATORY CHECKPOINT — Extraction cache + layout + motion
    > **Run these now. Do not hand off to `ui-registry-build` / `design-contract`
-   > until all three exit 0.**
+   > until all exit 0.**
    > ```bash
    > npm run build:spec-from-cache -- <id>   # derive spec.json + checklist from nodes/*.json (mandatory after REST or MCP extract)
    > npm run validate:figma-extract -- <id>    # every checklist nodeId has a nodes/*.json (or _shared) cache; no placeholder reference.png; figmaLastModified consistent
    > npm run build:layout         -- <id>      # (re)derive layout.json from the cache, offline
    > npm run validate:layout      -- <id>      # every leaf slug resolves in ui-registry; every gap/padding is a token; only allowed node types/hints
+   > npm run validate:motion-chains -- <id>   # when *-animation twins exist: all chains closed (Track A)
+   > npm run validate:motion-spec -- <id>      # when motion-spec.json exists: variants + keyframes present (Track B)
    > ```
    >
    > | Exit code | Action |

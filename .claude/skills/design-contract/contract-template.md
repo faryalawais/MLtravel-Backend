@@ -67,13 +67,34 @@
 |---------|-----------|------|--------|--------|---------|-----------|
 | <name>  | `color.surface.base` | `color.text.default` | — | `radius.md` | `space.md` | `font.size.body` |
 
-## 5. States
+## 5. States & motion
+
+### 5a. Interaction states
 | Element | State | Visual change (in tokens) |
 |---------|-------|---------------------------|
 | <name>  | hover | <token change> |
 | <name>  | focus | <focus ring tokens> |
 | <name>  | disabled | <token change> |
 | <name>  | loading / empty / error | <description> |
+
+### 5b. Motion-spec (Track B — supplementary)
+> Source: `features/<FEATURE-ID>/figma/motion-spec.json` (built during
+> `figma-extract` from the Figma **Animations** page variant frames via MCP).
+> Keyframes = geometry diff between variants. Duration/easing = `motion.*`
+> tokens once added to `tokens/semantics.json`, or `timing.durationMs` with
+> designer sign-off (`designerConfirmed: true`).
+>
+> **When Track A (`motion-chains.json`) also exists:** §2 **Motion** blocks are
+> authoritative for implementation; §5b records designer-confirmed timing only.
+
+| Component | Trigger | Keyframes (property → values) | Duration | Easing | Reduced motion |
+|-----------|---------|------------------------------|----------|--------|----------------|
+| `component.<feature>.<screen>.<key>` | onMount / scrollIntoView | `headlineBlock` translateY: 370px → 0px | `motion.duration.normal` | `motion.easing.enter` | final keyframe instantly |
+
+Per-component detail (copy from `motion-spec.json` when present):
+- **`<componentPath>`** — variants `default → 2 → 3` (nodeIds: …)
+  - `<element>`: `<property>` `<from>` → `<to>` (chain: …)
+  - Designer notes: …
 
 ## 6. Responsive
 | Breakpoint | What changes |

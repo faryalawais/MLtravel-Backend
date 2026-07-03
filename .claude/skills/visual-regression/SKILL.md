@@ -14,7 +14,9 @@ automation can and cannot do, and splits into two jobs.
 - `features/<id>/figma/reference-*-animation-state-*.png` — per-state motion
   baselines from figma-extract (when animation twins exist).
 - `features/<id>/figma/motion-chains.json` — pattern and state list (optional;
-  for motion test scaffolding).
+  for motion test scaffolding; Track A).
+- `features/<id>/figma/motion-spec.json` — keyframe inventory (optional;
+  Track B; used when contract §5b exists without closed chains).
 - The implemented, running feature.
 
 ## Job 1 — Golden-master regression  (the automated gate check)
@@ -129,8 +131,9 @@ do **not** prove hover chains, cascades, or GIF loops match Figma.
 | Optional automation (P2) | `tests/visual/motion-hover.spec.ts` | `page.hover('[data-testid=…]')` → wait `getDurationTokenMs(durationToken)` → screenshot |
 
 When writing Job 2 (`reports/<id>-visual.md`), for animated sections add a
-**Motion** subsection per `contract.md` **Motion** block:
-- **Pattern** from motion-chains
+**Motion** subsection per `contract.md` **Motion** block (Track A) or §5b
+(Track B when no §2 Motion block):
+- **Pattern** from motion-chains (Track A) or trigger/keyframes from motion-spec (Track B)
 - **Pre-hover screenshot** (Job 1) vs **terminal state reference PNG** (Job 4)
 - Verdict: **Matches** / **Differs** / **Not reviewed** (pending Step 7 APPROVE)
 

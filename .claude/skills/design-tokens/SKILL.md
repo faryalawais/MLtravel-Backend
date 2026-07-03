@@ -115,7 +115,9 @@ authoring contract.
      semantic aliases and their resolved ms / cubic-bezier values — used by
      `build:motion-from-cache` token mapping and `constants/motion.constants.ts`.
      If `validate:motion-chains` reports `durationToken: null` → add the missing
-     primitive + semantic alias here, rebuild, then re-run 12b.
+     primitive + semantic alias here, rebuild, then re-run 12b. Same when
+     `validate:motion-spec` (Track B) references `timing.durationToken` /
+     `timing.easingToken` with no matching semantic leaf.
    - Any warnings (W-1..W-N).
    - A final line: `STATUS: PASS` or `STATUS: FAIL` with reasons.
 

@@ -25,7 +25,11 @@ written down. That is this skill's job.
   - `features/<id>/figma/layout.json` — the composition tree
   - `features/<id>/figma/reference-<section>.png` — at least one real screenshot
   - `features/<id>/figma/notes.md`
-  If any file is missing or empty → **STOP immediately**. Do not write
+  - `features/<id>/figma/motion-spec.json` — **required when** the linked
+    Figma file has an Animations page with variant sets for in-scope
+    components and Track B inventory was run during `figma-extract`. Optional
+    otherwise (Track A `motion-chains.json` may be sufficient alone).
+  If any **mandatory** file is missing or empty → **STOP immediately**. Do not write
   `contract.md`. Do not advance status. Report exactly which files are missing
   and instruct the user to run `figma-extract` (frame mode) for the feature
   with the Figma MCP connected. There is no fallback to PRD prose or invented
@@ -37,17 +41,23 @@ written down. That is this skill's job.
   npm run validate:figma-extract -- <id>   # every checklist nodeId is cached; no placeholder reference; figmaLastModified consistent
   npm run validate:layout        -- <id>   # every layout.json leaf slug resolves; gaps/padding are tokens
   npm run validate:motion-chains -- <id>   # all *-animation chains closed; motion-diffs token-mapped (skip if no animation twins)
+  npm run validate:motion-spec -- <id>      # when motion-spec.json exists: variants + keyframes (Track B)
   ```
   If any exits non-zero → **STOP**. The extract is incomplete or the
   composition tree is invalid; re-run `figma-extract` / `build:layout` /
   `figma:motion-chain-walk` + `build:motion-from-cache`. Do not
   write `contract.md` against a partial extract.
-- **Motion inputs (0 MCP, read from disk):** `features/<id>/figma/motion-chains.json`,
-  `motion-diffs.json`, and `chain-walk-report.json`. Copy per-slice **Motion** blocks
-  into `contract.md` §2 (pattern, runner, trigger testId, key diff rows). List
-  `ambientMotion[]` gifRef rows in anatomy. **Authoritative docs:**
-  `docs/motion-guideline.md` · `docs/motion-pipeline-plan.md` step 16.
-  **Never** read `tokens/MOTION-SPEC.md`.
+- **Motion inputs (0 MCP, read from disk):**
+  - **Track A (primary):** `features/<id>/figma/motion-chains.json`,
+    `motion-diffs.json`, `motion-state-poses.json`, and `chain-walk-report.json`.
+    Copy per-slice **Motion** blocks into `contract.md` §2 (pattern, runner,
+    trigger testId, key diff rows). List `ambientMotion[]` gifRef rows in anatomy.
+  - **Track B (supplementary):** `features/<id>/figma/motion-spec.json` when
+    present — copy into §5b (designer-confirmed timing; variant keyframe inventory).
+  - **Authoritative docs:** `docs/motion-guideline.md` · `docs/motion-pipeline-plan.md`
+    step 16 · project `tokens/templates/motion-spec.*.json` (Track B shape).
+  - **Never** read `tokens/MOTION-SPEC.md`. When both tracks exist for a component,
+    **Track A §2 Motion blocks win for `fe-implement`**; §5b is timing sign-off only.
 - **Motion gate (MANDATORY when animation twins exist):**
   ```bash
   npm run validate:motion-chains -- <id>   # all chains closed before full contract
@@ -335,9 +345,44 @@ Fill in `contract-template.md` (in this skill's folder) for the feature:
      raw value in the contract.
    - If `allow_raw_values: true` is NOT set → **STOP** (same as step 3 above).
    Never substitute the closest token — approximations are fidelity bugs.
-5. **States** — default, hover, focus, active, disabled, loading, empty,
-   error — include only those that apply. Each state for a registered
-   component should also appear in its `$states` array in §1a.
+5. **States & motion**
+   - **5a. Interaction states** — default, hover, focus, active, disabled,
+     loading, empty, error — include only those that apply. Each state for a
+     registered component should also appear in its `$states` array in §1a.
+   - **5b. Motion-spec (Track B — supplementary)** — when the Figma file has an
+     **Animations** page (variant storyboard frames), or when
+     `features/<id>/figma/motion-spec.json` exists, copy every animated
+     component into §5b. MCP extracts keyframe targets only (position/opacity
+     diffs between `Property 1=*` variant symbols); duration and easing are
+     **not** in Figma file content unless supplied via `motion.*` tokens or
+     designer sign-off.
+
+     **Motion-spec procedure (during design-contract, 0 MCP if motion-spec exists):**
+     1. Read `features/<id>/figma/motion-spec.json` if present.
+     2. If absent but the feature uses animated components **and** the Animations
+        page exists with in-scope variant sets → **STOP** and instruct the user to
+        re-run `figma-extract` Track B inventory (see `figma-extract` SKILL).
+        If Track A closed chains already cover all animated slices, §5b may be
+        omitted.
+     3. For each `components[]` entry, write a §5b table row: `componentPath`,
+        `trigger`, summarized keyframes, `timing.durationToken` (or
+        `durationMs` when `designerConfirmed: true`), `timing.easingToken`,
+        and `implementation.reducedMotion`.
+     4. Every keyframe `element` must map to a §2 anatomy sub-element or be
+        noted as affecting the whole `[component.*]` root.
+     5. If `timing.designerConfirmed` is `false` for any component → **STOP**
+        before `status: contracted`. Ask the designer to confirm duration/easing
+        (Figma prototype panel or `motion.*` tokens), update
+        `motion-spec.json`, then re-run design-contract.
+
+     Reference shape: `tokens/templates/motion-spec.template.json` and
+     `tokens/templates/motion-spec.example.json` (when present in project repo).
+
+     **Dual-track rule:** prototype-driven motion is already documented in §2
+     **Motion** blocks from `motion-chains.json` (Track A). Do **not** duplicate
+     full keyframe geometry in §5b when §2 covers it — use §5b for designer-confirmed
+     timing when Track A has `durationToken: null`, or for inventory-only components
+     without closed chains yet.
 6. **Responsive** — breakpoints and what changes at each.
 7. **Accessibility** — roles, labels, focus order, keyboard interaction,
    contrast expectations.
@@ -447,9 +492,13 @@ feature's `design_contract` field in `backlog.yaml`, and advance its `status`
    reconciliation table is missing or shows MCP ✗ for any slice-root → **STOP**.
    Re-run `/figma-extract` before contracting. A REST-only extract cannot
    produce an exact contract for component-set variants.
-8. **Motion JSON is the only motion input.** Never read `tokens/MOTION-SPEC.md`.
-   Every animated section's Motion block must trace to `motion-chains.json` +
-   `motion-diffs.json` + `motion-state-poses.json`. Incomplete chains block the contract.
+8. **Dual motion tracks — both may coexist.** Never read `tokens/MOTION-SPEC.md`.
+   - **Track A (primary):** every animated section's §2 **Motion** block must trace
+     to `motion-chains.json` + `motion-diffs.json` + `motion-state-poses.json`.
+     Incomplete chains block the contract unless user approves partial contract.
+   - **Track B (supplementary):** when `motion-spec.json` exists, §5b must be
+     populated and `designerConfirmed: true` before `status: contracted`.
+     Track B does not replace Track A for prototype-driven slices.
 
 ## Success criteria
 - `contract.md` exists with all sections populated.
@@ -462,7 +511,10 @@ feature's `design_contract` field in `backlog.yaml`, and advance its `status`
 - Every IMAGE, ICON, LOGO, BADGE, or ILLUSTRATION in §2 anatomy references
   an actual `public/` file path — no word-only descriptions of visual assets.
 - Every `public/` path referenced in the anatomy exists on disk.
-- **Motion (when `*-animation` twins exist):** every closed chain has a §2
+- **Motion Track A (when `*-animation` twins exist):** every closed chain has a §2
   **Motion** block + **Motion bindings** table; every `gifRef` is in anatomy;
   `npm run validate:motion-chains -- <id>` exits 0.
+- **Motion Track B (when `motion-spec.json` exists):** §5b populated for every
+  `components[]` entry; `timing.designerConfirmed: true` for all; 
+  `npm run validate:motion-spec -- <id>` exits 0.
 - Backlog status is `contracted`.
