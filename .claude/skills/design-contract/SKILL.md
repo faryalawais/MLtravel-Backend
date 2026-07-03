@@ -36,10 +36,26 @@ written down. That is this skill's job.
   ```bash
   npm run validate:figma-extract -- <id>   # every checklist nodeId is cached; no placeholder reference; figmaLastModified consistent
   npm run validate:layout        -- <id>   # every layout.json leaf slug resolves; gaps/padding are tokens
+  npm run validate:motion-chains -- <id>   # all *-animation chains closed; motion-diffs token-mapped (skip if no animation twins)
   ```
-  If either exits non-zero → **STOP**. The extract is incomplete or the
-  composition tree is invalid; re-run `figma-extract` / `build:layout`. Do not
+  If any exits non-zero → **STOP**. The extract is incomplete or the
+  composition tree is invalid; re-run `figma-extract` / `build:layout` /
+  `figma:motion-chain-walk` + `build:motion-from-cache`. Do not
   write `contract.md` against a partial extract.
+- **Motion inputs (0 MCP, read from disk):** `features/<id>/figma/motion-chains.json`,
+  `motion-diffs.json`, and `chain-walk-report.json`. Copy per-slice **Motion** blocks
+  into `contract.md` §2 (pattern, runner, trigger testId, key diff rows). List
+  `ambientMotion[]` gifRef rows in anatomy. **Authoritative docs:**
+  `docs/motion-guideline.md` · `docs/motion-pipeline-plan.md` step 16.
+  **Never** read `tokens/MOTION-SPEC.md`.
+- **Motion gate (MANDATORY when animation twins exist):**
+  ```bash
+  npm run validate:motion-chains -- <id>   # all chains closed before full contract
+  ```
+  For incremental slice work while other chains are incomplete, the implementor may
+  use `npm run validate:motion-chains -- <id> --chain <AnimationName>` — but
+  **design-contract must not be written** until `validate:motion-chains -- <id>`
+  (no `--chain`) exits 0 unless the user explicitly approves a partial contract.
 - **Downloaded assets check (MANDATORY).** After verifying `notes.md` exists,
   read it and check for a "Downloaded assets" section. For every IMAGE, ICON,
   LOGO, BADGE, ILLUSTRATION, or VECTOR node visible in the Figma frame:
@@ -84,6 +100,34 @@ its name and its `nodeId`:
 - Every `sections[].widgets[].name` + `widgets[].nodeId`
 - Every `sections[].columns[].name` + `columns[].nodeId`
 - Every `sections[].banners[].name` + `banners[].nodeId`
+- Every `instanceVariants` object on INSTANCE nodes (e.g. `Size: Wide`,
+  `Accent: Navy`) — **one §4 token row per variant value**, never collapsed
+
+**Step 1b — Mandatory cache read for INSTANCE variants (before §3/§4):**
+
+Read `features/<id>/figma/nodes/<slice-root>.json` for each slice in
+`slice-roots.json`. Walk the raw tree for `type: "INSTANCE"` nodes with
+`componentProperties`. Build a **Variant matrix** (write into contract appendix
+or inline §2):
+
+```
+| nodeId | Component set | Size | Accent | Notes |
+| I5164:6562;3113:38 | FeatureCard | Wide | Navy | badge <100ms |
+```
+
+If `component-checklist.md` lists a `FeatureCard` / `AccentBar` / `Button`
+INSTANCE **without** `(variants: …)` and the cache also lacks
+`componentProperties` → **STOP**. Extraction is incomplete. Instruct user to
+re-run `/figma-extract` with MCP gap-fill (Timeout Split on that slice-root).
+Do not write a contract that guesses one accent colour for all cards.
+
+**Step 1c — Layout direction from cache (before §3):**
+
+For every container named in §2 (`FooterBar`, `FeatureCardsGrid`, nav tiers),
+copy `layout.direction`, `layout.justify`, and `layout.align` from `spec.json`
+or the node's `layoutMode` / `primaryAxisAlignItems` in the cache. **Never
+assume `column / center`** because a prior feature used that pattern. If
+`FooterBar` is `row` + `space-between` in cache, §3 must say so.
 
 If `spec.json` does not record `nodeId` on a named element → **STOP**. The
 `figma-extract` run that produced this spec.json was written before the nodeId
@@ -169,10 +213,88 @@ Fill in `contract-template.md` (in this skill's folder) for the feature:
    "orange circle logo", "Google Play icon"). The anatomy entry for an asset
    node must be: `<Image src="/icons/badge-google-play.svg" alt="..." width={N}
    height={N} />` — an implementable spec, not a prose description.
+
+   **Motion blocks (mandatory for every animated section).** Read
+   `features/<id>/figma/motion-chains.json`, `motion-diffs.json`,
+   `motion-state-poses.json`, and `chain-walk-report.json` (0 MCP). For **each**
+   chain with `status: "closed"` (and each `subgraphId` when a section is hybrid),
+   append the following **inside §2** beside that section's anatomy — sourced
+   from JSON only, never from `tokens/MOTION-SPEC.md` or memory:
+
+   **Per interactive chain — copy from `motion-chains.json`:**
+   ```markdown
+   **Motion (motion-chains · `<sliceRootNodeId>`):** pattern `<pattern>` ·
+   status `closed` · subgraph `<subgraphId>` (omit line if single graph) —
+   `<trigger.event>` on `<trigger.targetTestId>` → state N;
+   `<durationToken>` + `<easingToken>`; one-way, no mouse-leave.
+   Runner: `<runner>`.
+   ```
+
+   **Per interactive chain — summarize key rows from `motion-diffs.json`:**
+   ```markdown
+   **Motion bindings (motion-diffs):**
+   | Step | testId | Helper | Change |
+   |------|--------|--------|--------|
+   | 0 | `component.landing.pricing.motion.mainGroup` | `getMotionRevealStyle` | translateY spacing.24 → 0 |
+   ```
+   List only layers with non-empty `changes` — do not paste full JSON.
+
+   **Per interactive chain — state pose table from `motion-state-poses.json`:**
+   ```markdown
+   **Motion state poses (motion-state-poses):**
+   | State | Layer | translateYpx | testId |
+   |-------|-------|--------------|--------|
+   | 1 | Frame 1561553827 | 370 | component.landing.hero.motion.textColumn |
+   ```
+   Include `initialRender: staticTwin` when present — documents that page load
+   matches the static frame, not animation state 1.
+
+   **Hybrid sections (e.g. SocialProof):** when `motion-chains.json` has
+   multiple `chains[]` entries for one slice-root, write **one Motion block
+   per `subgraphId`** — integrations strip (`simple-one-step`) and carousel
+   (`custom`) are independent; do not collapse into one pattern.
+
+   **`pattern: custom`:** add a step table in the Motion block (step index,
+   delayMs/durationToken, layers affected) copied from `motion-chains` +
+   `motion-diffs`; note "requires human APPROVE before fe-implement codes
+   custom runner".
+
+   **Per `ambientMotion[]` / `gifRef` layer (ambient — often on static slice):**
+   ```markdown
+   ├─ Route plane  (nodeId I5164:6564;5151:11817;5147:6155)
+   │  — ambient GIF `public/images/pricing-route-plane-desktop.gif` (gifRef …)
+   │  — autoplay; `<Image unoptimized />`; not hover-driven
+   ```
+   List every `gifRef` from `asset-manifest.json` with `type: gif` in anatomy.
+
+   **BLOCK:** any chain `status: "incomplete"` in `chain-walk-report.json` or
+   `motion-chains.json` → do not write `contract.md` (re-run step 12 chain
+   walk). If `motion-chains` disagrees with legacy `tokens/MOTION-SPEC.md` →
+   **motion-chains wins**.
+
 3. **Layout & spacing** — direction, gaps, padding, alignment, sizing.
    Every value expressed as an **exact** design token from
    `reports/tokens-report.md`. "Exact" means the token's resolved px value
    equals the Figma measurement to within 1px.
+
+   **Layout direction is per-container — read from cache, never assume.**
+   For every named container in §3, copy `layout.direction`, `layout.justify`,
+   and `layout.align` from `spec.json` or the slice-root `nodes/<nodeId>.json`
+   cache. Do **not** default footers, CTAs, or toolbars to `column / center`
+   because an earlier slice used that pattern. Example: if Figma `FooterBar`
+   is `row` + `space-between`, §3 must say `row` + `space-between`, not
+   `column` + `center`.
+
+   **Component-set instance variants — one §4 row per instance, never collapsed.**
+   When the cache shows `componentProperties` on a Figma INSTANCE (e.g.
+   `FeatureCard` with `Size: Wide|Narrow`, `AccentBar` with
+   `Accent: Navy|Teal|Orange|Red`), document **each instance** in §2 anatomy
+   with its variant values in parentheses, and give **each instance its own §4
+   token row** (accent colour, size, padding if they differ). Forbidden:
+   writing one generic row such as “Accent bar → `color.action.primary`” for
+   all cards when Figma uses different `Accent` variants per card. The
+   implementor must be able to build from §4 alone — if variants are missing,
+   first-run UI will be wrong even when extraction is correct.
    **Never substitute a token whose resolved value differs from the Figma
    value** — approximations create invisible drift that compounds across
    components.
@@ -203,9 +325,11 @@ Fill in `contract-template.md` (in this skill's folder) for the feature:
      `feature-implement`.
 
 4. **Tokens** — per element: which token for background / text / border /
-   radius / spacing / font size. All token names must exactly match entries
-   in `reports/tokens-report.md`. If a Figma colour or radius has no exact
-   token match:
+   radius / spacing / font size / **font weight**. All token names must
+   exactly match entries in `reports/tokens-report.md`. When the cache gives
+   per-instance variant props, §4 must list tokens **per instance** (see step 3
+   variant rule) — not one token for all siblings of the same component name.
+   If a Figma colour or radius has no exact token match:
    - If `allow_raw_values: true` in backlog.yaml → record the exact hex/px
      value in the "Missing tokens (allow-raw approved)" section and use the
      raw value in the contract.
@@ -233,7 +357,11 @@ one exits 0. Do not mark `status: contracted` until both pass.
 > **Run this Bash command now. Do not skip, do not defer to the user.**
 > ```bash
 > npm run validate:figma-coverage -- <id>
+> npm run validate:figma-extract -- <id>
 > ```
+> `validate:figma-coverage` Check 1: every checklist entity in §2.
+> `validate:figma-extract`: cache complete, no placeholder PNGs, reconciliation
+> prerequisites (every slice-root has `nodes/*.json`).
 > | Exit code | Action |
 > |-----------|--------|
 > | **0** | Proceed to Checkpoint B |
@@ -309,6 +437,19 @@ feature's `design_contract` field in `backlog.yaml`, and advance its `status`
    A contract that omits visible Figma elements is incomplete. `feature-implement`
    will use this contract as the complete build checklist — any element absent
    from §2 is likely to be missing from the implementation too.
+6. **Component-set variants must not be collapsed in §4.** If the cache shows
+   different `componentProperties` on sibling instances (e.g. six `FeatureCard`s
+   with different `Accent` values), §4 needs one token row per instance — not
+   one generic row for the component name. Collapsing variants is a contract
+   defect that causes first-run orange-accent-on-everything bugs even when
+   extraction is correct.
+7. **`notes.md` must include Dual-source reconciliation.** If the figma-extract
+   reconciliation table is missing or shows MCP ✗ for any slice-root → **STOP**.
+   Re-run `/figma-extract` before contracting. A REST-only extract cannot
+   produce an exact contract for component-set variants.
+8. **Motion JSON is the only motion input.** Never read `tokens/MOTION-SPEC.md`.
+   Every animated section's Motion block must trace to `motion-chains.json` +
+   `motion-diffs.json` + `motion-state-poses.json`. Incomplete chains block the contract.
 
 ## Success criteria
 - `contract.md` exists with all sections populated.
@@ -321,4 +462,7 @@ feature's `design_contract` field in `backlog.yaml`, and advance its `status`
 - Every IMAGE, ICON, LOGO, BADGE, or ILLUSTRATION in §2 anatomy references
   an actual `public/` file path — no word-only descriptions of visual assets.
 - Every `public/` path referenced in the anatomy exists on disk.
+- **Motion (when `*-animation` twins exist):** every closed chain has a §2
+  **Motion** block + **Motion bindings** table; every `gifRef` is in anatomy;
+  `npm run validate:motion-chains -- <id>` exits 0.
 - Backlog status is `contracted`.

@@ -79,6 +79,13 @@ authoring contract.
    - `radius.*` containing semantic-role aliases (e.g. `control`,
      `surface`, `pill`).
    - `shadow.*` containing named-scale aliases (e.g. `sm/md/lg`).
+   - `motion.duration.*` — semantic duration aliases (e.g. `default`, `stepDelay`,
+     `autoAdvance`) pointing at primitive `duration` tokens; required when the
+     feature has animation twins (`motion-chains.json` references
+     `durationToken` / `delayToken`).
+   - `motion.easing.*` — semantic easing aliases (e.g. `default`, `hero`) pointing
+     at cubic-bezier or named easing primitives; required when motion-chains
+     references `easingToken`.
    - `typography.{display | heading | body | label}.*` — at least one
      compound per role.
    Every semantic leaf's alias target must exist as a primitive in the
@@ -104,6 +111,11 @@ authoring contract.
      list IS the design-contract vocabulary — `spec-author` and
      `design-contract` should reference semantic tokens by default and fall
      back to primitives only when no semantic alias fits.
+   - **Motion token section:** list all `motion.duration.*` and `motion.easing.*`
+     semantic aliases and their resolved ms / cubic-bezier values — used by
+     `build:motion-from-cache` token mapping and `constants/motion.constants.ts`.
+     If `validate:motion-chains` reports `durationToken: null` → add the missing
+     primitive + semantic alias here, rebuild, then re-run 12b.
    - Any warnings (W-1..W-N).
    - A final line: `STATUS: PASS` or `STATUS: FAIL` with reasons.
 

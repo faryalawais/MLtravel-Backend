@@ -16,6 +16,10 @@ Automated gate. Validates `tokens/ui-registry.json` against two sources:
 ## Inputs
 - `tokens/ui-registry.json` — the registry to validate
 - `features/<fe-jira-id>/figma/spec.json` — Figma source of truth
+- `features/<fe-jira-id>/figma/motion-diffs.json` — motion layer testIds (when
+  animation twins exist; optional)
+- `features/<fe-jira-id>/figma/motion-chains.json` — trigger testIds (when
+  animation twins exist; optional)
 - `docs/openapi/` or Swagger URL — for data-binding check (optional if not yet available)
 
 ## Checks
@@ -56,6 +60,19 @@ non-existent endpoints.
 Flag any entry with `"tokenMissing": true` as a warning (not a blocking
 failure). Display the raw Figma values so the designer can add tokens.
 
+### Check 6 — Motion path coverage (when motion JSON exists)
+If `features/<fe-jira-id>/figma/motion-diffs.json` exists:
+
+- Every `layers[].testId` in motion-diffs must resolve to a key in
+  `ui-registry.json`.
+- Every `chains[].trigger.targetTestId` in `motion-chains.json` must resolve.
+- Motion entries should carry `$figmaLayerName` when the diff row has a `name`
+  field (warning if missing — not blocking until P1 enforcement).
+
+If motion JSON is absent (feature has no animation twins), skip this check.
+
+**Failure output:** list of motion testIds with no registry entry.
+
 ## Procedure
 
 Run all applicable checks. Collect all failures.
@@ -71,6 +88,7 @@ Run all applicable checks. Collect all failures.
 
 ## Success criteria
 - Checks 1–4 all pass
+- Check 6 passes when motion JSON exists (or skipped when no animation twins)
 - Check 5 warnings noted but do not block
 - Memory updated
 

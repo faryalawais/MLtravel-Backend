@@ -5,7 +5,9 @@ description: >-
   frame data, @fe Gherkins, and the published OpenAPI spec from BE. Uses
   speckit internally — one task per @fe scenario, component by component.
   Figma is the visual reference; contract.md is the boundary; OpenAPI is the
-  data contract. Run only after BE ticket is be-implemented.
+  data contract. Run only after BE ticket is be-implemented. After each
+  vertical slice (GitHub issue), STOP for mandatory human review before
+  memory, commit, or the next slice.
 ---
 
 # fe-implement
@@ -22,7 +24,12 @@ BE must be fully implemented and the OpenAPI spec published before this starts.
 - `features/<fe-jira-id>/figma/layout.json` — the composition tree (where each
   component sits on the page)
 - `features/<fe-jira-id>/figma/` — `spec.json`, `reference-<section>.png`,
+  `reference-*-animation-state-*.png` (per-state motion baselines),
   `asset-manifest.json`, `run-report.json`
+- `features/<fe-jira-id>/figma/motion-chains.json` — timing, pattern, runner,
+  every chain state (when feature has animation twins)
+- `features/<fe-jira-id>/figma/motion-diffs.json` — per-layer Smart Animate
+  deltas per transition (when feature has animation twins)
 - `features/<parent-id>/<parent-id>.feature` (`@fe` scenarios only)
 - `docs/openapi/paths/<be-jira-id>.yaml` — the published BE API contract
 - `tokens/ui-registry.json` — component paths and token bindings
@@ -81,9 +88,12 @@ Read these completely before writing any code (all on disk — 0 MCP):
 2. `figma/nodes/<nodeId>.json` — the cached exact values per slice-root/leaf
 3. `figma/layout.json` — the composition tree (where each component sits)
 4. `figma/reference-<section>.png` — open and keep as visual reference throughout
-5. `figma/spec.json` — exact measurements, colours, spacing (+ `$meta.figmaLastModified` for the freshness check)
-6. `docs/openapi/paths/<be-jira-id>.yaml` — know every endpoint and response field
-7. `tokens-report.md` — know which token names to use
+5. `figma/spec.json` — exact measurements, colours, spacing, **`instanceVariants`**
+   per INSTANCE (+ `$meta.figmaLastModified` for the freshness check)
+6. `figma/component-checklist.md` — confirm `(variants: …)` on every component-set
+   INSTANCE; if missing → STOP, re-run `/figma-extract` MCP gap-fill
+7. `docs/openapi/paths/<be-jira-id>.yaml` — know every endpoint and response field
+8. `tokens-report.md` — know which token names to use
 
 ### Step 2 — Plan with speckit
 Run `speckit-plan` with:
@@ -138,6 +148,10 @@ FOR EACH component in the current slice/task:
        - Color token for every fill, stroke, background
        - Border width, border-radius / shadow tokens
        - Icon sizes and exact SVG asset URLs
+       - **Figma INSTANCE `componentProperties`** (e.g. `Size: Wide`,
+         `Accent: Navy`) — one record per card/row, not one value for all
+       - **Container `layout.direction` / `justify` / `align`** for footers,
+         grids, and header stacks (from `spec.json` or cache)
   4. Read layout.json to know WHERE this component sits on the page
      (its slot in the composition tree) so a stub/replace slice drops the real
      component into a known position — do not re-derive page composition.
@@ -151,15 +165,96 @@ FOR EACH component in the current slice/task:
   - the cache file is missing AND figma:refresh-node cannot fetch it → STOP,
     report to user (the feature was not fully extracted; re-run figma-extract)
   - A measurement has no exact token and allow_raw_values is not set → STOP
+  - **INSTANCE `componentProperties` missing** for a named component set card
+    (FeatureCard, AccentBar, etc.) in cache → STOP; re-run `/figma-extract`
+    MCP gap-fill with Timeout Split on that slice-root — do not guess variants
+  - **Variant matrix row count ≠ implementation card count** → STOP; fix contract
+    or re-extract before coding
 ```
 
 **Why cache-first is correct:** the cache is a verified-fresh snapshot, not a
 guess. `figma-extract` captured the exact recursive payload once; the
 `figmaLastModified` stamp makes staleness explicit, and `figma:refresh-node`
 re-fetches exactly the one node that drifted. So you keep live-Figma correctness
-without the ~26 duplicate calls. If contract.md §2 and the cached payload
-disagree on a value, the cached Figma value wins — update the contract to match.
-Never extract the full frame; never loop `get_design_context` per component.
+without the ~26 duplicate calls. If contract.md §2/§3/§4 and the cached payload
+disagree on a value, **the cached Figma value wins** — implement from cache and
+update the contract to match. Never extract the full frame; never loop
+`get_design_context` per component.
+
+**Anti-pattern: sibling-section cloning (BLOCKER).**
+Do **not** implement the current slice by copying layout, class strings, or
+motion logic from another landing section (Problem, Comparison, How-it-works,
+etc.) without re-reading **this** slice's cache and `reference-<section>.png`.
+Prior sections are reference for *code patterns* (hooks, test-id wiring), not
+for dimensions, footer direction, accent colours, or card sizes. If you catch
+yourself reusing `max-w-[424px]`, a shared accent-bar colour, or a centered
+footer column from a sibling → stop and read the Feature grid (or current
+slice) cache first.
+
+**Motion implementation (animated desktop slices only).** Authoritative docs:
+`docs/motion-guideline.md` (patterns + examples) ·
+`docs/motion-pipeline-plan.md` step 17.
+
+**Pre-code motion checklist (write in chat before opening `.tsx` for this slice):**
+```
+□ Do NOT read tokens/MOTION-SPEC.md
+□ motion-chains.json — chain for this slice: status "closed" (or subgraph closed)
+□ motion-diffs.json — all diffs for this chain / subgraphId
+□ motion-state-poses.json — per-state translateYpx; initialRender staticTwin vs animationState1
+□ Every transition: trigger, delayMs, durationToken, easingToken from motion-chains
+□ Every moving layer: testId in ui-registry.json (component.*.motion.*)
+□ Custom translateY px (custom: true) → constants/motion.constants.ts only — never inline in TSX
+□ If initialRender is staticTwin: pre-hover layout = flex/natural flow matching static frame — NOT animation state 1
+□ Staged-sequence timing: cumulative duration+delay between steps — not delay × stepIndex
+□ If any state node missing from nodes/ → figma:refresh-node before coding
+□ contract.md **Motion** block matches motion-chains.json (pattern, runner, trigger)
+□ Bind each motion-diffs row → helper + data-testid — not sibling TSX
+□ gifRef ambient → asset-manifest path + <Image unoptimized /> — no hover handler
+□ reference-*-animation-state-*.png available for Step 7 spot-check
+□ prefers-reduced-motion: show terminal state, skip runner (when useReducedMotion exists)
+```
+
+**Pattern → code (mechanical — from `motion-chains.json` `pattern` field):**
+
+| `pattern` | Runner / wiring |
+|-----------|-----------------|
+| `simple-one-step` | `useOneWayMotion(() => setRevealed(true))` + `getMotionRevealStyle` / slide helpers from diffs |
+| `rapid-four-step` | `useOneWayMotion(() => runRapidFourStepMotion([...]))` — step callbacks from motion-diffs `stepIndex` |
+| `staged-sequence` | `useOneWayMotion(() => runHeroMotion(...))` or `runFeatureGridMotion(...)` per chain `runner` |
+| `ambient-gif` | `<Image unoptimized src={…} />` — no `useOneWayMotion` |
+| `custom` | Read full subgraph in motion-chains + step table in contract.md; **human APPROVE** before coding |
+
+**Hybrid sections:** when one slice has multiple `chains[]` with different
+`subgraphId` (e.g. SocialProof integrations + carousel), wire each subgraph
+independently — do not collapse into one pattern.
+
+**Token discipline for motion:** never emit `translateY(${fromPx}px)` or raw
+`700ms` from diffs in TSX — use mapped `token` → `var(--spacing-*)` /
+`var(--motion-duration-*)` or helpers in `constants/motion.constants.ts`.
+When `motion-diffs` marks `custom: true` (no spacing token for 370/284 etc.),
+define named constants in `motion.constants.ts` sourced from `motion-state-poses.json`.
+
+**Step 7 motion review (mandatory for animated slices):** after automated gates,
+hover the slice at 1440px desktop and compare end-state to
+`reference-<slug>-animation-state-terminal.png` (or highest state index PNG).
+For multi-step patterns (`rapid-four-step`, `staged-sequence`), spot-check
+intermediate states against `reference-*-animation-state-2.png` etc. if the
+cascade looks wrong. Static `test:visual` screenshots capture **pre-hover**
+layout only — they do not prove motion fidelity.
+
+**Violation routing (motion):** wrong timing, pattern, or layer binding →
+`/figma-extract` chain walk + `build:motion-from-cache`, not ad-hoc CSS.
+Wrong Motion block → `/design-contract`. Missing motion testId →
+`/ui-registry-build` → `/registry-validate` then rebuild diffs.
+
+**Pre-code variant checklist (write in chat before opening `.tsx`):**
+For each repeated Figma component (FeatureCard, AccentBar, SectionPill, etc.):
+```
+| nodeId | Size variant | Accent/colour variant | WxH | padding |
+```
+If every row in the table is identical, one implementation class is fine.
+If any column differs → per-instance props in `constants/` + conditional
+classes; a single shared colour/size is wrong.
 
 **Stale or missing cache protocol:** If a node's cache file is missing or its
 `figmaLastModified` no longer matches `spec.json`:
@@ -177,6 +272,14 @@ Never extract the full frame; never loop `get_design_context` per component.
 **§4 Token Audit — mandatory after EVERY component, before moving on:**
 `token-lint` only catches raw values — it cannot catch a wrong token. `bg-surface-warning`
 and `bg-surface-brand` are both valid tokens; only `contract.md §4` says which is correct.
+
+**Typography — cache wins over semantic names:**
+Before picking `text-heading-desktop-h2`, `h4`, or `color.pill.*.text`, read the TEXT
+node in `figma/nodes/<slice>.json` and record `fontSize`, `fontWeight`, and the fill
+variable id (e.g. `3003:24` → `color.text.brand-navy`). Map **px → utility** via
+`tokens/build/tokens.css` (40px/700 → `text-heading-desktop-h1`, not h2). If §4 says
+"h2" but cache says 40px → implement h1 and fix §4. Pill labels often bind to
+`color.text.brand-navy` even when the pill semantic token says white/teal.
 
 After writing each component, open `contract.md §4 Tokens per element` and walk every row
 that applies to elements in that component. For each row, verify the exact token used in
@@ -281,13 +384,33 @@ implementation must also work at mobile (≥320px) and tablet (≥768px).
 - Layout, spacing, typography, colours must match Figma within fidelity tolerance
   defined in contract.md §11.
 
-### Step 5 — Run tests after each component
+### Step 5 — Run tests after each slice (MANDATORY before next GH issue)
+
+After **every** section slice (GH#N), run all three gates scoped to that slice.
+Do not start the next slice until they pass.
+
 ```bash
-npm run test:e2e -- --grep "<scenario name>"
+# 1. E2E smoke — visibility, CTAs, navigation for this slice
+npm run test:e2e -- --grep "GH#<N>"
+
+# 2. Visual regression — screenshot baselines for this slice's desktop + mobile roots
+npm run test:visual -- --grep "<slice-name>"
+
+# 3. Typography precision — computed fontSize/fontWeight for this slice
+npm run test:visual -- tests/visual/lp-001-typography.spec.ts --grep "<slice-name>"
+```
+
+If visual baselines for the slice do not exist yet, establish them once with
+`npm run test:visual:update -- --grep "<slice-name>"` and note "baseline
+pending human approval" in the Step 7 review card.
+
+Also run after each slice:
+```bash
+npm run typecheck
 ```
 
 Fix failures before moving to the next component. Never move on with a
-failing scenario.
+failing scenario or failing visual/typography assertion.
 
 ### Step 6 — Final gate
 After all components implemented, run a full §4 sweep across every implemented component:
@@ -314,7 +437,86 @@ npm run typecheck && npm run lint && npm run token-lint
 
 All three must pass.
 
-### Step 7 — Write to memory
+> **If Playwright is not yet scaffolded** (`test:e2e` / `test:visual` missing from
+> `package.json`): report it explicitly in the gate summary, run every other gate
+> that exists (`validate:*`, `ui-registry:validate`, `tokens:validate`, `build`,
+> `typecheck`), and **still proceed to Step 7 (human review)** — do not skip
+> review because BDD/visual is pending. Scaffold via `/bdd-scaffold` and
+> `/visual-regression` in a separate pass when the user asks.
+
+### Step 7 — Human slice review gate (MANDATORY — Day Shift)
+
+**This step blocks everything after it.** Do not write memory, sync Jira, commit,
+push, open a PR, or start the next GitHub issue until the user explicitly
+approves the current slice.
+
+After Step 6 automated gates pass (or are reported as partially scaffolded),
+**STOP implementing** and present a structured review card to the user:
+
+```markdown
+## Slice review — GH#<N> <slice name>
+
+**Implemented:** <component files + routes>
+**Figma refs:** `features/<id>/figma/reference-<section>.png` (nodes <ids>)
+**Check at:** 1440px desktop + 393px mobile (`npm run dev` → http://localhost:3000)
+
+### Automated gates
+| Gate | Result |
+|------|--------|
+| validate:figma-extract | pass / fail |
+| validate:contract | pass / fail |
+| validate:motion-chains (if animated slice) | pass / not applicable |
+| test:e2e (`--grep GH#<N>`) | pass / not scaffolded |
+| test:visual (slice screenshots — pre-hover) | pass / baseline pending / not scaffolded |
+| test:visual (typography spec) | pass / not scaffolded |
+| build + typecheck | pass / fail |
+
+### Motion review (animated slices only)
+- **Pattern:** `<from motion-chains.json>`
+- **End-state ref:** `reference-<slug>-animation-state-<N>.png`
+- **Action:** hover slice in browser; compare to reference PNG(s); note any layer drift
+
+### Known deviations (from contract / Figma)
+- <list each, or "none documented">
+
+---
+
+Please review this slice in the browser. Reply with:
+- **APPROVE** (or "LGTM", "looks good", "move on") — to proceed to the next slice, or
+- **Specific violations / improvements** — numbered list; I will fix them before re-asking.
+```
+
+**Wait for the user's reply.** Do not assume approval. Do not batch multiple
+slices without a review between each one.
+
+#### If the user reports violations or improvements
+
+1. **One fix cycle per user message** — address their list completely before
+   re-running gates and presenting the review card again.
+2. **Route fixes through the correct skill** (turn by turn, in pipeline order):
+   | Fix type | Skill to invoke |
+   |----------|-----------------|
+   | Stale or wrong Figma node data | `/figma-extract` or `npm run figma:refresh-node` |
+   | Missing / wrong tokens | `/design-tokens` |
+   | Registry path or test-id drift | `/ui-registry-build` → `/registry-validate` |
+   | Contract anatomy / §4 token wrong | `/design-contract` |
+   | Wrong motion timing / pattern / layer binding | `/figma-extract` chain walk + `build:motion-from-cache` (never `MOTION-SPEC.md`) |
+   | Wrong Motion block in contract | `/design-contract` after rebuild 12b |
+   | Component layout / styling / responsiveness | stay in `/fe-implement` |
+   | BDD steps missing | `/bdd-scaffold` |
+   | Visual baselines | `/visual-regression` |
+3. After fixes: re-run **Step 6** automated gates, then present **Step 7** review
+   card again. Repeat until the user says **APPROVE**.
+4. **Never start the next GitHub issue** while the current slice is unapproved.
+
+#### If the user says APPROVE
+
+- Mark the slice approved in conversation (and optionally note in `memory.md`).
+- Tell the user what the **next slice** is (next GitHub issue) and which skill
+  to invoke first (`/figma-extract` for the new slice's nodes).
+- Do **not** auto-commit unless the user explicitly asks to commit and push.
+
+### Step 8 — Write to memory
 ```markdown
 ## Implementation Notes
 ### FE notes
@@ -325,15 +527,16 @@ All three must pass.
 - typecheck: passed
 - token-lint: passed
 - Deviations from contract: <none / list if any>
+- Human review: APPROVED on <date> (or: pending)
 ```
 
-### Step 8 — Run `jira-sync`
+### Step 9 — Run `jira-sync`
 Set FE ticket to `fe-implemented`.
 
-### Step 9 — Run `figma-comment`
+### Step 10 — Run `figma-comment`
 Post FE implementation complete notice to parent Jira ticket.
 
-### Step 10 — Commit, push branch, open PR
+### Step 11 — Commit, push branch, open PR
 ```bash
 # Stage all feature work
 git add app/ components/ features/<fe-jira-id>/ docs/ tokens/
@@ -376,7 +579,8 @@ EOF
 - Every `[component.*]` tag has a corresponding `data-testid`
 - `test:e2e` exits 0
 - `test:visual` exits 0
-- `typecheck`, `lint`, `token-lint` all pass
+- `typecheck`, `lint`, `token-lint` all pass (or reported not scaffolded)
+- Human slice review: user said **APPROVE** for this GitHub issue
 - No raw hex or px in `app/` or `components/`
 - All pages render correctly at 375px, 768px, and 1280px+ viewport widths
 - FE ticket `fe-implemented`
@@ -401,6 +605,9 @@ EOF
   any disagreement against Figma, then implement it once. Never re-implement a shared
   component that already exists. A shared component with the wrong token or a duplicate
   implementation breaks every feature that uses it.
+- **Human slice review is mandatory after every GitHub issue / vertical slice.**
+  Never skip Step 7. Never start the next slice until the user says APPROVE.
+  Fix cycles use the correct upstream skill in pipeline order, one turn at a time.
 - speckit is used internally — do not call speckit skills from outside this skill.
 - **No code before the cache is read. Every component's exact values come from
   `features/<fe-jira-id>/figma/nodes/<nodeId>.json` (the cache `figma-extract`
@@ -412,3 +619,7 @@ EOF
   call `get_design_context` per component, and never extract the full frame — the
   single-session driver in `figma-extract` already did that once and cached it
   (`docs/figma-single-pass-extract-plan.md` §6, §12).
+- **Motion wiring comes from JSON only.** Never read `tokens/MOTION-SPEC.md`.
+  Pattern, timing, and layer helpers must trace to `motion-chains.json` +
+  `motion-diffs.json`. Wrong motion → re-extract + `build:motion-from-cache`,
+  not sibling-section cloning or ad-hoc CSS.

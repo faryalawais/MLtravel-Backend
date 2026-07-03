@@ -16,6 +16,10 @@ it uses.
 
 ## Inputs
 - `features/<fe-jira-id>/figma/spec.json` — Figma frame extract
+- `features/<fe-jira-id>/figma/motion-chains.json` — animation chains (when
+  `*-animation` twins exist; used for motion path registration)
+- `features/<fe-jira-id>/figma/motion-diffs.json` — per-layer deltas (when
+  motion extract complete; cross-check `testId` bindings)
 - `reports/tokens-report.md` — compiled token vocabulary
 - `features/<fe-jira-id>/memory.md` — to read Gherkins section for component paths
 
@@ -60,6 +64,43 @@ driver uses to resolve slice-roots, and what `build-layout.mjs` uses to swap a
 without `$figmaNode` is invisible to both — the layout leaf will not resolve.
 For shared chrome (nav/footer) extracted into `features/_shared/figma/`, also set
 `"$shared": true` so the driver and `validate:figma-extract` look there.
+
+### Step 2b — Register motion paths (`component.*.motion.*`)
+
+When `motion-chains.json` / `motion-diffs.json` exist (after step 12b
+`build:motion-from-cache`), register **every moving layer** and the chain
+trigger root:
+
+- Path shape: `component.<feature>.<section>.motion.<elementName>` (lowerCamelCase)
+- **Mandatory fields on each motion entry:**
+  - `$figmaNode` — Figma node id (INSTANCE suffix or layer id from diff)
+  - `$figmaLayerName` — exact layer `name` from `motion-diffs.json` (used by
+    `build-motion-from-cache` for diff → testId binding)
+  - `$states` — at minimum `["default", "hover"]` for interactive chains
+  - `$screen` — parent screen path
+
+Example entry:
+```json
+"component.landing.problem.motion.headerWrap": {
+  "$description": "Problem section motion — header slide reveal target",
+  "$screen": "screen.landing",
+  "$figmaNode": "I5164:10344;5145:4201",
+  "$figmaLayerName": "header-wrap",
+  "$states": ["default", "hover"]
+}
+```
+
+**Coverage rule:** every `testId` in `motion-diffs.json` must resolve to a
+registry entry. Every chain `trigger.targetTestId` must exist. Re-run
+`npm run build:motion-from-cache -- <id>` after adding motion paths so diffs
+pick up bindings. Cross-check with `npm run validate:motion-chains -- <id>`.
+
+**Ambient `gifRef` layers** use normal `component.*` paths (not `.motion.*`)
+unless the layer is exclusively a motion decorative — document in anatomy per
+`design-contract` skill.
+
+Authoritative docs: `docs/motion-guideline.md` · `docs/motion-pipeline-plan.md`
+steps 14–15.
 
 ### Step 3 — Identify states for each component
 For each component, check spec.json for variant data or layer naming that
@@ -145,6 +186,9 @@ Set FE ticket to `ui-registry-ready`.
 - `tokens/ui-registry.json` updated with all Figma components
 - Every named Figma element has a `component.*` entry (no element skipped)
 - Every component entry has `$figmaNode`, `$states`, and `$tokens`
+- **Motion (when animation twins exist):** every `motion-diffs.json` `testId`
+  and every chain `trigger.targetTestId` has a registry entry with
+  `$figmaLayerName` where applicable
 - Every `component-checklist.md` row maps to a registry entry
 - `registry-validate` exits 0
 - Memory UI Registry section written
@@ -157,3 +201,6 @@ Set FE ticket to `ui-registry-ready`.
 - Never merge-overwrite entries from other features in the registry.
 - If spec.json is missing or empty → stop. Do not write the registry.
   Report and instruct user to run `figma-extract` first.
+- **Motion paths:** never invent `component.*.motion.*` without a matching row
+  in `motion-diffs.json` or `motion-chains.json` trigger — paths are contracts
+  for `validate:motion-chains` and `fe-implement` wiring.

@@ -11,6 +11,10 @@ automation can and cannot do, and splits into two jobs.
 ## Inputs
 - A feature `id` and its `features/<id>/contract.md`.
 - `features/<id>/figma/reference.png` — the Figma baseline, if it exists.
+- `features/<id>/figma/reference-*-animation-state-*.png` — per-state motion
+  baselines from figma-extract (when animation twins exist).
+- `features/<id>/figma/motion-chains.json` — pattern and state list (optional;
+  for motion test scaffolding).
 - The implemented, running feature.
 
 ## Job 1 — Golden-master regression  (the automated gate check)
@@ -112,6 +116,30 @@ Walk `figma/spec.json` and assert any node that has:
 Prioritise fixed-size nodes (explicit Figma frame px values). Skip flex/auto-layout
 dimensions that have no explicit constraint in the Figma file.
 
+## Job 4 — Motion fidelity (human + optional automation)
+
+**Static golden-master screenshots (Job 1) capture pre-hover layout only.** They
+do **not** prove hover chains, cascades, or GIF loops match Figma.
+
+| Responsibility | Who | How |
+|----------------|-----|-----|
+| End-state hover fidelity | Human at `fe-implement` Step 7 | Hover slice; compare to `reference-<slug>-animation-state-<N>.png` |
+| Multi-step cascade | Human spot-check | Intermediate `reference-*-animation-state-2.png` etc. if cascade looks wrong |
+| Ambient GIF | Human + `validate:assets` | GIF on disk matches `asset-manifest.json`; plays without hover |
+| Optional automation (P2) | `tests/visual/motion-hover.spec.ts` | `page.hover('[data-testid=…]')` → wait `getDurationTokenMs(durationToken)` → screenshot |
+
+When writing Job 2 (`reports/<id>-visual.md`), for animated sections add a
+**Motion** subsection per `contract.md` **Motion** block:
+- **Pattern** from motion-chains
+- **Pre-hover screenshot** (Job 1) vs **terminal state reference PNG** (Job 4)
+- Verdict: **Matches** / **Differs** / **Not reviewed** (pending Step 7 APPROVE)
+
+Do not add motion hover screenshots to the golden-master baseline unless an
+explicit `motion-hover.spec.ts` exists — mixing pre- and post-hover in the
+default `lp-001.spec.ts` baselines would hide layout regressions.
+
+Authoritative docs: `docs/motion-guideline.md` · `docs/motion-pipeline-plan.md`.
+
 ## Integration with governance-gate
 `governance-gate` runs `npm run test:visual` as its fourth check:
 - No baseline yet → record "visual baseline pending human approval"
@@ -143,3 +171,5 @@ no one silently disables visual tests when they fail on setup.
 - `tests/visual/<id>.spec.ts` exists and runs; baselines are generated or compared.
 - `tests/visual/<id>-dimensions.spec.ts` exists if `figma/spec.json` has dimension/typography data.
 - `reports/<id>-visual.md` is written with section-by-section Present/Differs/Missing verdicts.
+- **Motion (when animation twins exist):** Job 2 report notes motion sections;
+  Step 7 human review uses per-state reference PNGs (Job 4).

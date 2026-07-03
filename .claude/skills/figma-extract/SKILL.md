@@ -177,13 +177,103 @@ Use per feature, after `spec-author`, to give `design-contract` real data.
 
 Inputs: a feature `id`, and the Figma frame/node URL for that feature.
 
-### ⚡ PRIMARY PATH — REST chunk extract + cache-derived spec (recommended)
+### ⚡ REQUIRED PATH — Dual-source extract (REST + MCP, reconciled)
 
-When DTCG tokens are already in `tokens/` and the Figma MCP `get_design_context`
-tool is unreliable (Appendix A.9 — hangs/timeouts in programmatic clients), use
-the **REST-first** pipeline. It writes the same `nodes/*.json` cache shape as the
-MCP driver, with full recursive geometry, typography, text, and
-**`boundVariables`** token bindings — **0 MCP**.
+**Neither REST nor MCP alone is sufficient for exact implementation.**
+
+| Source | Strength | Weakness |
+|--------|----------|----------|
+| **REST** (`figma:extract:rest`) | Full geometry, `boundVariables`, scales without agent timeouts | May omit Dev Mode hints; large nodes are fine |
+| **Desktop MCP** (`get_design_context` / driver) | `componentProperties` (Size/Accent/State variants), nested layout semantics | Timeouts on large slice-roots in programmatic clients |
+| **REST images** (`figma:export-image`) | Reference PNGs + SVG/PNG assets | Never use for measurements |
+
+**Rule:** Run **both** REST and MCP for every slice-root. Reconcile into one
+`nodes/<nodeId>.json` cache per slice. Downstream skills read disk only — but
+that disk must be the **merged** truth, not REST-only.
+
+```bash
+# ── Phase 1: REST bulk (always first — reliable geometry + boundVariables) ──
+npm run figma:extract:rest -- --feature <id> --frame <frame-node-id>
+npm run figma:export-image -- --feature <id>
+
+# ── Phase 2: MCP gap-fill (componentProperties, layout semantics) ──
+# Try driver first; on exit 2 use agent MCP per-slice (see Timeout Split below)
+npm run figma:extract -- --feature <id> --frame <frame-node-id>
+
+# Per slice-root that still lacks componentProperties after driver:
+#   npm run figma:refresh-node -- --feature <id> --refresh-node <nodeId>
+# On timeout → split to child nodes (Timeout Split Protocol below)
+
+# ── Phase 3: Derive + validate (offline) ──
+npm run build:spec-from-cache -- <id>
+npm run validate:figma-extract -- <id>
+npm run build:layout -- <id>
+npm run validate:layout -- <id>
+npm run validate:figma-coverage -- <id>
+```
+
+**Dual-source reconciliation (MANDATORY before handoff).** For each
+`slice-roots.json` entry, verify in `nodes/<nodeId>.json`:
+
+1. **Geometry** — width/height/padding/gap match REST (authoritative for px).
+2. **Layout** — `layoutMode`, `primaryAxisAlignItems`, `counterAxisAlignItems`
+   present; if `spec.json` §3 disagrees with cache, cache wins.
+3. **Instance variants** — every `INSTANCE` of a named component set
+   (`FeatureCard`, `AccentBar`, `Button/Primary`, etc.) has
+   `componentProperties` captured. If REST cache lacks them → MCP
+   `get_design_context` on that instance node (or parent slice split).
+4. **Checklist** — after `build:spec-from-cache`, every INSTANCE row in
+   `component-checklist.md` shows `(variants: Size=Wide, Accent=Navy)` when
+   applicable. Missing variant suffix on a known component set → incomplete
+   extract → do not hand off.
+
+Record reconciliation in `notes.md`:
+
+```markdown
+## Dual-source reconciliation
+| slice-root | REST | MCP | instanceVariants | action |
+|------------|------|-----|------------------|--------|
+| 5164:6562  | ✓    | ✓   | 6× FeatureCard   | merged |
+```
+
+**Timeout Split Protocol (when MCP times out on a node).** Never retry the
+same large node. Split recursively until each call succeeds:
+
+```
+extractNode(nodeId):
+  1. Try get_design_context(nodeId) OR figma:refresh-node for nodeId
+  2. ON timeout | truncated | empty componentProperties on known INSTANCEs:
+     a. get_metadata(nodeId) → list direct children (id, name, type)
+     b. FOR EACH child where visible !== false:
+          extractNode(child.id)   # recurse — may split again
+     c. Merge child payloads into nodes/<parent>.json OR add child ids to
+        slice-roots.json as separate cache files (preferred when children are
+        independent sections)
+  3. Stop splitting when: call succeeds AND every INSTANCE in subtree has
+     componentProperties OR node is a leaf TEXT/VECTOR
+```
+
+**Minimum chunk size:** split down to individual `FeatureCard`, `FooterBar`,
+`SectionHeader`, and motion prototype roots — not smaller than one demoable
+UI component. For LP-001-scale sections (~6 cards), each **card INSTANCE**
+is a valid MCP target when the section root times out.
+
+**Never hand off when:**
+- Only REST ran and any checklist row is a `FeatureCard` / `AccentBar` INSTANCE
+  without `(variants: …)` in component-checklist.md
+- `validate:figma-extract` ≠ 0
+- Reference PNG is placeholder (< 10 KB)
+- Dual-source reconciliation table is missing from `notes.md`
+
+---
+
+### REST-only fast path (geometry refresh — not sufficient alone for new slices)
+
+When DTCG tokens are already in `tokens/` and you only need to **refresh
+geometry** on an already-reconciled slice (variants already in cache), REST
+alone is OK **only if** `component-checklist.md` already shows variant suffixes
+for every INSTANCE and `validate:figma-extract` exits 0. For **new** slices or
+after Figma edits, run the full dual-source path above.
 
 ```bash
 # 0. Document slice-roots (one REST call per in-scope section)
@@ -201,6 +291,12 @@ npm run build:spec-from-cache -- <id>
 
 # 4. derive the composition tree from the cache (offline, 0 MCP)
 npm run build:layout -- <id>
+
+# 5. MOTION — animation chain walk + motion artifacts (docs/motion-pipeline-plan.md)
+npm run figma:motion-chain-walk -- --feature <id>
+# refresh every missing destinationId from chain-walk-report, then re-run step 5
+npm run build:motion-from-cache -- <id>
+npm run validate:motion-chains -- <id>   # must exit 0 before design-contract
 ```
 
 After step 3, `spec.json` carries `boundVariables` per node from REST. Run
@@ -225,19 +321,125 @@ extracted as separate REST/MCP chunks — one cache file per entry:
 uses it for section order. Shared chrome (nav/footer) lives in
 `features/_shared/figma/nodes/` — record `(shared)` rows in the checklist.
 
-### MCP driver path (when get_design_context works)
+### Animation chain walk (mandatory when `*-animation` in slice-roots)
+
+**Authoritative docs:** `docs/motion-guideline.md` (overview) · `docs/motion-pipeline-plan.md` (extract algorithms).
+
+Motion is **not done** until every animation twin has a **closed** chain — meaning
+**every variant state** is cached as its own `nodes/<nodeId>.json`, not just state 1.
+
+#### Two motion kinds (extract both)
+
+| Kind | Figma signal | Extract | FE (fe-implement) |
+|------|--------------|---------|-------------------|
+| **Interactive** | `interactions[]` on `*-animation` variant chain | Chain walk + `motion-chains.json` + `motion-diffs.json` | `useOneWayMotion` + pattern runner + helpers |
+| **Ambient** | `gifRef` on IMAGE fill (often on **static** slice) | `asset-manifest.json` + disk file | `<Image unoptimized />` — no hover handler |
+
+#### Mandatory extract checklist (per `*-animation` slice-root)
+
+`/figma-extract` is **not complete** for a feature with animation twins until **every row** passes:
+
+| # | Requirement | Output |
+|---|-------------|--------|
+| 1 | Slice-root cached | `nodes/<id>.json` state 1 + root `interactions[]` or `transitionNodeID` |
+| 2 | **Every `destinationId` in chain** cached | `nodes/<dest>.json` for states 2…N |
+| 3 | Chain closed | `chain-walk-report.json` + `motion-chains.json` `status: "closed"` |
+| 4 | Every transition recorded | trigger, durationMs, easing, delayMs in `motion-chains.json` |
+| 5 | Layer diffs built | `motion-diffs.json` per consecutive state pair |
+| 6 | Reference PNG per state (min: state 1 + terminal) | `reference-<slug>-animation-state-N.png` |
+| 7 | Registry paths for moving layers | `component.*.motion.*` in `ui-registry.json` |
+| 8 | All `gifRef` downloaded | `asset-manifest.json` + `validate:assets` |
+| 9 | `componentProperties` on animation INSTANCE (MCP gap-fill) | checklist `(variants: Property 1=1)` |
+| 10 | Reconciliation table in `notes.md` | one row per state per twin |
+| 11 | Nested `interactions[]` scanned on **full subtree** | `triggerNodeId` on each transition |
+| 12 | Non-root entry triggers documented | e.g. hero CTA `ON_HOVER` → `trigger.targetNodeId` |
+| 13 | `componentProperties` diff state 1 vs terminal | accent/size variant changes in notes.md |
+| 14 | Unknown duration/delay flagged | `durationToken: null` → `validate:motion-chains` FAIL |
+| 15 | Every Animations-page twin in `slice-roots.json` | no orphan `*-animation` frames |
+
+#### npm procedure (after REST steps 1–4)
+
+```bash
+# A. Discover chains + list missing variant nodes
+npm run figma:motion-chain-walk -- --feature <id>
+# writes features/<id>/figma/chain-walk-report.json
+
+# B. Refresh EVERY missing destinationId (repeat until chain walk exits 0)
+npm run figma:refresh-node -- --feature <id> --refresh-node <destinationId>
+# Re-run A until: "All animation chains closed."
+
+# C. MCP gap-fill when REST has transitionNodeID but empty interactions[]
+#    (Navbar pattern) — merge prototype into nodes/<id>.json; set $meta.prototypeSource: "mcp"
+
+# D. Per-state reference PNGs (minimum: state 1 + terminal per twin)
+npm run figma:export-image -- --feature <id>
+# Target naming: reference-<slug>-animation-state-<N>.png per motion-chains states[].referencePng
+
+# E. Build motion artifacts (offline)
+npm run build:motion-from-cache -- <id>
+# writes motion-chains.json + motion-diffs.json
+
+# F. Gate — full feature (all chains closed)
+npm run validate:motion-chains -- <id>
+
+# G. Gate — single slice while others incomplete (pilot testing)
+npm run validate:motion-chains -- <id> --chain Pricing-animation
+```
+
+#### `notes.md` reconciliation block (append per animation twin)
+
+```markdown
+### Motion extract — ProblemSection-animation
+| State | nodeId | Cached | interactions out | Reference PNG |
+|-------|--------|--------|------------------|---------------|
+| 1 | 5164:10344 | ✓ | → 5145:4440 MOUSE_ENTER 700ms | reference-problem-animation-state-1.png |
+| 2 | 5145:4440 | ✓ | → 5145:4442 AFTER_TIMEOUT 120ms | reference-problem-animation-state-2.png |
+| … | … | … | … | … |
+Chain status: **closed** | motion-chains built | validate:motion-chains: pass
+```
+
+#### Trigger normalization (record in motion-chains.json)
+
+| Figma trigger | Canonical | FE event |
+|---------------|-----------|----------|
+| `MOUSE_ENTER` | `MOUSE_ENTER` | `onMouseEnter` on `trigger.targetTestId` |
+| `ON_HOVER` | `MOUSE_ENTER` | same (hero CTA child pattern) |
+| `AFTER_TIMEOUT` | `AFTER_TIMEOUT` | `runSteppedMotion` / pattern runner timers |
+| `MOUSE_LEAVE` | ignored | one-way product rule — do not wire reverse |
+| `ON_CLICK` / unsupported | **STOP** | report — extend catalog first |
+
+#### Hard rules
+
+- **BLOCK** `design-contract` / `fe-implement` if any chain `status: incomplete` (full gate).
+- **Never** read or depend on `tokens/MOTION-SPEC.md` — `motion-chains.json` + `motion-diffs.json` + `motion-state-poses.json` are the agent contract.
+- **Never** guess timing or which layers move — rebuild from cache only.
+- Scan **subtree** `interactions[]`, not only slice-root (nested triggers).
+- **Desktop motion by default** — mobile static unless `*-mobile-animation` twin exists in slice-roots.
+
+#### Artifacts written by motion extract
+
+```
+features/<id>/figma/
+├── chain-walk-report.json      # missing destinationIds per twin
+├── motion-chains.json          # timing, pattern, runner, every state nodeId
+├── motion-diffs.json           # per-layer Smart Animate deltas per transition
+├── motion-state-poses.json     # per-state translateYpx matrix; initialRender rule
+├── nodes/<every-state>.json    # one file per variant state in chain
+└── reference-*-animation-state-*.png
+```
+
+### MCP driver path (Phase 2 of dual-source — when get_design_context works)
 
 `figma-extract` is the **only** skill in the FE branch that touches the Figma
-MCP. Per `docs/figma-single-pass-extract-plan.md` (§11 Phase 3, §12 LOCKED),
-the MCP session is owned by a deterministic Node client, **not** the agent —
-the giant `get_design_context` payloads are written straight to an on-disk
-cache that every downstream skill reads, so `ui-registry-build`,
-`design-contract`, and `fe-implement` make **zero** MCP calls.
+MCP routinely. Per `docs/figma-single-pass-extract-plan.md`, the MCP session is
+owned by a deterministic Node client when healthy; on driver exit 2, the agent
+runs the **same slice list** via MCP tools with **Timeout Split Protocol**
+(above). Payloads merge into `features/<id>/figma/nodes/<nodeId>.json` — REST
+geometry is kept; MCP adds `componentProperties` and Dev Mode fields.
 
-Run the driver when MCP is healthy. It makes one `get_metadata(frame)` call for composition
-geometry, then one small `get_design_context` per **slice-root** node (resolved
-from `tokens/ui-registry.json` `$figmaNode` bindings / `slice-roots.json`),
-writing each payload to `features/<id>/figma/nodes/<nodeId>.json`:
+Run the driver after REST Phase 1. It makes one `get_metadata(frame)` call for
+composition geometry, then one small `get_design_context` per **slice-root**
+node, writing each payload to `features/<id>/figma/nodes/<nodeId>.json`:
 
 ```bash
 # 1. THE ONE MCP SESSION — resumable, timeout-safe, concurrency = 1
@@ -268,11 +470,12 @@ and `layout.json` so `fe-implement` can detect a stale cache (Layer D, §10b) an
 `figma:refresh-node` exactly the drifted node.
 
 **Fallback (Appendix A.9):** if the desktop MCP server cannot be driven by the
-out-of-process client (the documented "get_design_context never returns" /
-"No session found" condition), the driver exits 2 with a clear message. Degrade
-to the **agent-driven Large Frame Protocol below** — the SAME chunking and the
-SAME incremental `nodes/*.json` cache, just driven by the agent's own MCP tool
-calls in order. Screenshots/assets still go through `npm run figma:export-image`.
+out-of-process client ("get_design_context never returns" / "No session found"),
+the driver exits 2. Continue dual-source with the **agent-driven Timeout Split
+Protocol** — same incremental `nodes/*.json` cache, one MCP call at a time,
+splitting large nodes into children until each call succeeds. Screenshots/assets
+still go through `npm run figma:export-image`. **Do not skip MCP** — REST-only
+handoff is blocked for new slices (see reconciliation rules above).
 
 Outputs, under `features/<id>/figma/`:
 - `nodes/<nodeId>.json` — **NEW.** The raw `get_design_context` payload per
@@ -378,37 +581,40 @@ Steps:
    child frames/groups. Each named child becomes a named object in the
    appropriate structured array. Never collapse children into a prose string.
 
-   ### ⚠ LARGE FRAME PROTOCOL — mandatory when the full frame exceeds MCP limits
+   ### ⚠ LARGE FRAME / TIMEOUT PROTOCOL — mandatory when MCP exceeds limits
 
-   Full-page Figma frames (product detail, homepage, checkout) routinely exceed
-   the `get_design_context` token budget and return an error or a saved file
-   that is too large to read in one pass. **Do not retry on the full frame.**
-   Doing so will always fail or truncate — you will get an incomplete tree and
-   will miss sections, which leads to spec.json prose-collapse or omissions.
+   Full-page Figma frames and large slice-roots (FeatureGrid, Comparison,
+   Hero) routinely exceed the `get_design_context` token budget. **Do not retry
+   the same node ID.** Split recursively per **Timeout Split Protocol** (Mode B
+   dual-source section above).
 
-   When the full frame fails, use this four-step section-by-section approach:
+   When the full frame OR a slice-root fails, use this four-step approach:
 
    **Step 1a — Get section node IDs (never omit this step)**
-   Call `get_metadata` on the full frame node ID. This returns the frame's
-   top-level children with their `id` and `name` without the deep subtree.
-   Extract the node ID and name of every top-level child (Nav, Breadcrumb,
-   ProductContent, Tabs, RelatedProducts, Footer, etc.).
+   Call `get_metadata` on the failing node ID. This returns direct children with
+   `id` and `name` without the deep subtree. If the failing node IS the full
+   frame, extract every top-level child. If a slice-root timed out, extract its
+   direct children (e.g. six `FeatureCard` INSTANCEs, `FooterBar`, `header-wrap`).
 
-   **Step 1b — Call `get_design_context` per section**
-   For each top-level section node ID from step 1a, call `get_design_context`
-   with that section's node ID (not the parent frame). Each section fits within
-   the budget. Read the complete output for each section before moving to the
-   next. Do not batch-read multiple sections — read one, extract all named
-   children, then proceed to the next.
+   **Step 1b — Call `get_design_context` per child (smallest viable chunk)**
+   For each child node ID from step 1a, call `get_design_context` with that
+   child's ID — **not** the parent. If a child still times out, repeat 1a–1b on
+   that child (recursive split). Minimum chunk = one named component INSTANCE
+   (one card, one footer bar, one header stack). Read complete output before
+   moving on. Do not batch-read multiple sections.
 
    **Step 1c — Build the section inventory**
-   From each section's `get_design_context` response, extract:
+   From each section's cache / `get_design_context` response, extract:
    - Every named `data-name` element and its `data-node-id`
-   - Layout classNames (flex direction, gap, padding, alignment)
+   - **`componentProperties`** on every INSTANCE (`Size`, `Accent`, `State`, …)
+   - Layout classNames / `layoutMode` (flex direction, gap, padding, alignment,
+     `justify-content: space-between`)
    - Typography classNames (font size, weight, line-height)
    - Colour variables (`var(--token-name, #fallback)` — extract the token name)
    - Dimensions from `width` / `height` inline styles
    Record these as named structured objects in `spec.json` — never as prose.
+   INSTANCE entries MUST include `instanceVariants` in spec.json (via
+   `build:spec-from-cache` when cache has `componentProperties`).
 
    **nodeId is MANDATORY on every named object in spec.json.**
    Every entry in `sections[]`, `layers[]`, `widgets[]`, `columns[]`, and
@@ -831,12 +1037,19 @@ non-empty array of distinct lowerCamelCase strings.
   emitting non-trivial output during the PoC.
 
 ## Success criteria
-- Mode A: `tokens/design-tokens.json` exists and is valid JSON in DTCG shape.
 - Mode B: `spec.json`, `notes.md`, `component-checklist.md`, and the
   `nodes/<nodeId>.json` cache (one per slice-root, or a `_shared/` pointer) all
   exist under `features/<id>/figma/`; `layout.json` and `run-report.json` are
   written; `reference-<section>.png` are **real** REST exports (not placeholders);
-  and `validate:figma-extract`, `build:layout`, `validate:layout` all exit 0.
+  **`notes.md` includes Dual-source reconciliation table** with REST ✓ MCP ✓;
+  **every INSTANCE of a component set in checklist shows `(variants: …)`** when
+  Figma uses variants; and `validate:figma-extract`, `build:layout`,
+  `validate:layout` all exit 0.
+- **Motion (when `*-animation` in slice-roots):** `chain-walk-report.json`,
+  `motion-chains.json`, `motion-diffs.json` exist; **every chain state** has
+  `nodes/<state-nodeId>.json` on disk; `notes.md` has per-twin motion
+  reconciliation tables; `validate:motion-chains` exits 0 before downstream skills.
+  See `docs/motion-guideline.md`.
 
 ## Failure handling
 If the Figma MCP is unavailable, or the file/frame URL is wrong, **stop and
