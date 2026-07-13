@@ -28,7 +28,10 @@ Gate for **post-extract** token JSON. Does **not** run on empty `{}` placeholder
    `reports/tokens-validate-report.json`). Do **not** edit Figma hex values to
    satisfy lint — fix export shape or validators instead.
 5. If **PASS**: run `npm run tokens:audit-figma` for Figma coverage gaps, then
-   the **design-tokens** skill.
+   the **design-tokens** skill (compile). If
+   `features/<id>/figma/missing-tokens-report.md` has unresolved rows, those
+   must be extended as **exact** new primitive + semantic tokens during
+   design-tokens — never cleared by binding nearest/old tokens in the registry.
 
 ## What is checked
 

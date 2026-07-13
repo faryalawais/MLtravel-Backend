@@ -176,3 +176,16 @@ no one silently disables visual tests when they fail on setup.
 - `reports/<id>-visual.md` is written with section-by-section Present/Differs/Missing verdicts.
 - **Motion (when animation twins exist):** Job 2 report notes motion sections;
   Step 7 human review uses per-state reference PNGs (Job 4).
+
+## Step final — Commit (mandatory)
+
+After Jobs 1–3 complete (baselines created or verified, report written):
+
+```bash
+git add tests/visual/<id>*.spec.ts tests/visual/__screenshots__/visual/<id>*.spec.ts/ \
+  reports/<id>-visual.md reports/<id>-screenshots/ features/<id>/memory.md
+git commit -m "chore(<id>): visual-regression baselines"
+```
+
+See `skills/_shared/pipeline-git-commit.md`. First-run baselines are still
+**pending human approval** — commit them anyway so the gate can compare drift.

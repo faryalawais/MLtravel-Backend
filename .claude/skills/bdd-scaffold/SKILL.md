@@ -101,3 +101,14 @@ After writing step definitions, execute the two mandatory checkpoints below
 ## Failure handling
 If steps fail to compile, fix the step file. If a scenario can't be expressed
 as a runnable step, return to `spec-author` — the spec, not the test, is wrong.
+
+## Step final — Commit (mandatory)
+
+After Checkpoint B exits 0:
+
+```bash
+git add tests/steps/ playwright.config.ts package.json package-lock.json features/<id>/memory.md
+git commit -m "chore(<id>): bdd-scaffold"
+```
+
+See `skills/_shared/pipeline-git-commit.md`.

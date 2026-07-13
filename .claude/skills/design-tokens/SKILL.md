@@ -87,10 +87,17 @@ authoring contract.
      at cubic-bezier or named easing primitives; required when motion-chains
      references `easingToken`.
    - `typography.{display | heading | body | label}.*` — at least one
-     compound per role.
+     compound per role. Prefer **paired desktop + mobile** leaves for each
+     named style (e.g. `heading.desktop.h1` and `heading.mobile.h1`).
    Every semantic leaf's alias target must exist as a primitive in the
    merged document and have a matching `$type` (or, for compound typography,
    matching atomic primitive types).
+   - **Letter-spacing primitives must be `$type: dimension` with `unit: "px"`.**
+     Unitless `$type: number` values (e.g. `0.2`) compile to bare CSS numbers
+     and are treated as *em* by browsers — FAIL and require px before build.
+   - **Font weight:** Bold = `{font.weight.700}`, Semi Bold = `600`,
+     Medium = `500`, Regular = `400`. Do not invent parallel `font.style.*`
+     string tokens for CSS — numeric weights are the source of truth.
 4. **Check naming.** Token paths should be consistent (dotted
    `category.group.…`, kebab-case key suffixes like `inverse-muted`,
    `ring-error`). Decimal-keyed primitives (e.g. `spacing.0.5`) are allowed
@@ -102,6 +109,26 @@ authoring contract.
    `shadow/object-to-string`, `fontFamily/css`), and emits the two build
    artifacts. A clean build prints `✔︎ tokens/build/tokens.css` and
    `✔︎ tokens/build/tailwind-tokens.js` and reports zero collisions.
+   **Post-build FE handoff:** remind that every `typography.json` leaf needs a
+   matching `@utility` in `app/globals.css` (including `letter-spacing`). Token
+   compile alone does not wire Tailwind utilities — that is `fe-implement`.
+5b. **Extend from `missing-tokens-report.md` (MANDATORY when present).**
+   After a slice `figma-extract`, if
+   `features/<id>/figma/missing-tokens-report.md` lists unresolved rows
+   (or status is not RESOLVED):
+
+   1. For **each** row: add a **new primitive** whose `$value` equals the
+      Figma measurement exactly (px / colour object form), then a **new
+      semantic** alias pointing at that primitive.
+   2. **Never** satisfy a row by pointing at an existing token whose
+      resolved value differs (nearest / old section token). That is a
+      fidelity bug.
+   3. Re-run structural validation (steps 1–4), then `npm run tokens:build`.
+   4. Mark the report **RESOLVED** with the new token paths.
+   5. Only after `STATUS: PASS` may `ui-registry-build` bind `$tokens`.
+
+   Pipeline order: **extract → exact-or-new tokens → `tokens:build` →
+   registry `$tokens` → design-contract → fe-implement**.
 6. **Write the report** to `reports/tokens-report.md`:
    - Per-file leaf counts (primitives / semantics / typography).
    - Token counts by `$type` and by `$extensions.layer`.
@@ -118,6 +145,9 @@ authoring contract.
      primitive + semantic alias here, rebuild, then re-run 12b. Same when
      `validate:motion-spec` (Track B) references `timing.durationToken` /
      `timing.easingToken` with no matching semantic leaf.
+   - **Typography FE checklist:** count of compound leaves vs count of
+     `text-*` `@utility` blocks in `app/globals.css` (must match; note gap
+     if FE utilities lag the token file).
    - Any warnings (W-1..W-N).
    - A final line: `STATUS: PASS` or `STATUS: FAIL` with reasons.
 
@@ -131,15 +161,27 @@ they were valid. Write the precise error (file, token path, reason) into the
 report, end it with `STATUS: FAIL`, and stop. Do not advance any feature.
 
 ## Notes
-- This skill never edits `tokens/primitives.json`, `tokens/semantics.json`,
-  or `tokens/typography.json` — those files are owned by the designer /
-  Figma export / `figma-extract` skill. If a source file is broken, report
-  it; don't "fix" it.
+- **Extending tokens is required for fidelity.** When
+  `features/<id>/figma/missing-tokens-report.md` has unresolved rows, this
+  skill **must** add new primitive + semantic leaves for the exact Figma
+  values, then rebuild. Do **not** leave the gap for registry to "pick
+  closest".
+- **Do not change resolved values of existing tokens** to make a new frame
+  fit — that breaks prior features. Add new scale steps / aliases instead.
+- Do not "fix" broken DTCG shape by inventing values unrelated to Figma;
+  if a source file is malformed, report the path and reason.
+  **Exception:** unitless `font.letterspacing.*` `$type: number` values may be
+  normalised to `{ value, unit: "px" }` `$type: dimension` when the designer
+  has confirmed letter-spacing is always px (browser unitless = em). Document
+  the change in the tokens report.
 - The Style Dictionary config at `tokens/sd.config.mjs` IS owned by this
   skill. If it lacks a transform/format needed by a new token type or value
   shape, update it (and document the change in the report).
 - If `tokens/sd.config.mjs` is missing, create it per the project README
   before proceeding.
+- Compiling tokens does **not** update `app/globals.css` typography utilities.
+  After a typography sync, `fe-implement` (or a dedicated follow-up) must add
+  any new `@utility` classes before UI work continues.
 
 ## Out of scope — UI registry (sibling)
 

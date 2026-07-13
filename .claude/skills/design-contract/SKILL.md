@@ -78,7 +78,15 @@ written down. That is this skill's job.
     are absent and instruct the user to re-run `figma-extract` to download them.
   - If `notes.md` has an "Assets requiring manual download" section → **STOP**.
     Those assets must be provided before the contract can be written.
-- `reports/tokens-report.md` — the allowed token vocabulary.
+- `reports/tokens-report.md` — the allowed token vocabulary. Must end with
+  `STATUS: PASS` from a `tokens:build` that includes any new tokens required
+  by this slice. If `features/<id>/figma/missing-tokens-report.md` has
+  unresolved rows → **STOP**. Run `design-tokens` (exact-or-new) first.
+- **Registry token gate (MANDATORY):** `tokens/ui-registry.json` entries for
+  this feature must not carry `tokenMissing: true`. Run
+  `npm run ui-registry:validate` / registry-validate — Check 5 is blocking.
+  If any `$tokens` bind was a nearest/old token (resolved value ≠ Figma) →
+  **STOP**; fix tokens + rebuild registry before writing `contract.md`.
 
 ## Procedure
 
@@ -339,6 +347,15 @@ Fill in `contract-template.md` (in this skill's folder) for the feature:
    exactly match entries in `reports/tokens-report.md`. When the cache gives
    per-instance variant props, §4 must list tokens **per instance** (see step 3
    variant rule) — not one token for all siblings of the same component name.
+
+   **Border / stroke width — mandatory in every §4 border cell.** Read
+   `strokeWeight` from the cached node (not from memory). Write it next to the
+   border colour token, e.g. `` `color.pill.problem.border` 0.3px `` or
+   `` `color.border.default` 1px ``. Never list colour alone. SectionPills and
+   similar hairline strokes are often **0.3px** in Figma — omitting the width
+   causes FE to default to Tailwind `border` (1px) and drift. If `strokeWeight`
+   is absent / 0 and there is no stroke → write `none`, not a colour token.
+
    If a Figma colour or radius has no exact token match:
    - If `allow_raw_values: true` in backlog.yaml → record the exact hex/px
      value in the "Missing tokens (allow-raw approved)" section and use the
@@ -453,12 +470,19 @@ feature's `design_contract` field in `backlog.yaml`, and advance its `status`
    extract is treated the same as no extract.
 3. **Token discipline — exact, never approximate.** Every visual measurement
    must resolve to a design token whose resolved value **exactly matches** the
-   Figma measurement (within 1px / 1 hex digit). Approximations are forbidden
-   even if "close". If no exact token exists, the pipeline is blocked: do NOT
-   write the raw value into the contract unless `allow_raw_values: true` is set
-   in backlog.yaml by a human. "Nearest token" is a fidelity bug. Automatically
-   falling back to a raw value without human approval is also a bug — it hides
-   design-system gaps from the designer.
+   Figma measurement (within 1px / exact hex). Approximations are forbidden
+   even if "close". **Reusing an old section/feature token name whose resolved
+   value differs from this frame is forbidden** — add a new primitive +
+   semantic, `tokens:build`, re-bind registry, then contract. If no exact
+   token exists, the pipeline is blocked: do NOT write the raw value into the
+   contract unless `allow_raw_values: true` is set in backlog.yaml by a human.
+   "Nearest token" is a fidelity bug. Automatically falling back to a raw
+   value without human approval is also a bug — it hides design-system gaps
+   from the designer. Order: extract → exact-or-new tokens → `tokens:build` →
+   registry `$tokens` → this skill → `fe-implement`. **Stroke width is a
+   measurement:** every §4 border cell must include Figma `strokeWeight`
+   (e.g. `0.3px`), not colour alone — hairline pills defaulting to 1px in CSS
+   is a fidelity bug.
 4a. **Asset paths are mandatory in §2 anatomy.** Every IMAGE, ICON, LOGO, BADGE,
    or ILLUSTRATION node MUST be referenced by its actual `public/` path in the
    anatomy, not described in words. If you find yourself writing "brand logo" or
@@ -518,3 +542,16 @@ feature's `design_contract` field in `backlog.yaml`, and advance its `status`
   `components[]` entry; `timing.designerConfirmed: true` for all; 
   `npm run validate:motion-spec -- <id>` exits 0.
 - Backlog status is `contracted`.
+
+## Step final — Commit (mandatory)
+
+After Checkpoint B exits 0 and `status: contracted` is written:
+
+```bash
+git rev-parse --abbrev-ref HEAD   # must be feature/<fe-jira-id>
+git add features/<id>/contract.md features/<id>/memory.md features/backlog.yaml
+git commit -m "chore(<id>): design-contract"
+```
+
+If Step 0 created the branch, this is the first commit on that branch. See
+`skills/_shared/pipeline-git-commit.md`.

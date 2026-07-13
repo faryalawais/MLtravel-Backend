@@ -157,9 +157,14 @@ FOR EACH component in the current slice/task:
   4. Read layout.json to know WHERE this component sits on the page
      (its slot in the composition tree) so a stub/replace slice drops the real
      component into a known position — do not re-derive page composition.
-  5. Map every recorded value to its exact design token from tokens-report.md.
+  5. Map every recorded value to its exact design token from tokens-report.md
+     (and registry `$tokens` for this component). Resolved value must equal
+     Figma (within 1px / exact hex). **Never** use a nearest or prior-slice
+     token whose value differs — that is a fidelity bug.
      If ANY value has no exact token match → STOP. Follow the missing-tokens
-     protocol (see figma-extract skill). Do not approximate.
+     protocol: `design-tokens` adds primitive + semantic → `tokens:build` →
+     `ui-registry-build` rebinds `$tokens` → then resume implement.
+     Do not approximate. Do not proceed to code with wrong tokens.
   6. **Motion (dual track — use A when available, else B):**
      - **Track A (primary):** closed chain in `motion-chains.json` for this slice
        → follow "Motion implementation" checklist below (runners, helpers, fixtures).
@@ -177,6 +182,10 @@ FOR EACH component in the current slice/task:
   - the cache file is missing AND figma:refresh-node cannot fetch it → STOP,
     report to user (the feature was not fully extracted; re-run figma-extract)
   - A measurement has no exact token and allow_raw_values is not set → STOP
+  - Registry entry for this slice has `tokenMissing: true` → STOP; run
+    design-tokens (exact new tokens) → tokens:build → ui-registry-build first
+  - Any `$tokens` bind whose resolved value ≠ Figma (nearest/old reuse) → STOP;
+    same fix path as missing tokens
   - **INSTANCE `componentProperties` missing** for a named component set card
     (FeatureCard, AccentBar, etc.) in cache → STOP; re-run `/figma-extract`
     MCP gap-fill with Timeout Split on that slice-root — do not guess variants
@@ -284,6 +293,23 @@ classes; a single shared colour/size is wrong.
 - No raw hex values. All colours from `var(--token-name)` or Tailwind token class.
 - No raw `px` values. All spacing from token-backed Tailwind classes.
 - Every token name must exist in `reports/tokens-report.md`.
+- **Exact fidelity:** the token's resolved value must match Figma / `contract.md`
+  §4. Reusing an old token name with a different resolved value is forbidden —
+  same class of bug as raw hex. Fix via new tokens + rebuild, not nearest bind.
+- Prefer registry `$tokens` + contract §4 over inventing bindings at implement
+  time. If registry has `tokenMissing` → STOP; do not implement that slice.
+
+**Border / stroke width — mandatory (prevents SectionPill 1px vs Figma 0.3px drift):**
+1. From cache (or §4 if it includes width), record exact `strokeWeight` for every
+   stroked node (pills, cards, chips, strips). Do **not** assume 1px.
+2. Map width → class: `0.3` → `border-[0.3px]`; `1` → `border` (or `border-[1px]`);
+   other values → `border-[Npx]` with the Figma number. Colour stays on a separate
+   `border-[var(--color-…)]` / token class.
+3. **Forbidden:** plain `border` (Tailwind default **1px**) when cache/`§4` says
+   anything other than 1. SectionPill hairlines are almost always **0.3px**.
+4. If §4 lists border **colour only** (no width) → read `strokeWeight` from
+   `figma/nodes/*.json` and implement that width; then fix §4 to include it.
+5. §4 audit must check border **width and colour**, not colour alone.
 
 **§4 Token Audit — mandatory after EVERY component, before moving on:**
 `token-lint` only catches raw values — it cannot catch a wrong token. `bg-surface-warning`
@@ -297,9 +323,41 @@ variable id (e.g. `3003:24` → `color.text.brand-navy`). Map **px → utility**
 "h2" but cache says 40px → implement h1 and fix §4. Pill labels often bind to
 `color.text.brand-navy` even when the pill semantic token says white/teal.
 
+**Typography utilities — mandatory (prevents Figma vs app size/weight drift):**
+
+1. **Use compound utilities only.** Every text style comes from `app/globals.css`
+   `@utility text-{role}-{breakpoint}-{variant}` (e.g. `text-body-mobile-md`,
+   `text-heading-desktop-h1`). These set `font-family`, `font-size`, `font-weight`,
+   `line-height`, and `letter-spacing` from `tokens/build/tokens.css`.
+2. **One utility per breakpoint.** Desktop layouts use `*-desktop-*`; mobile
+   layouts use `*-mobile-*`. Never put `text-body-desktop-md` on a mobile-only
+   tree (or vice versa). Prefer separate desktop/mobile markup or a
+   `variant` / `typography` prop — do not rely on desktop sizes “looking fine”
+   on mobile.
+3. **No ad-hoc typography class strings.** Forbidden in components and
+   `constants/*.constants.ts`:
+   - `[font-family:var(--typography-…)] [font-size:var(--typography-…)] …`
+   - `text-[length:var(--font-size-…)]` / `[font-size:var(--font-size-…)]`
+   If a compound utility is missing for a `typography.json` leaf, **add the
+   matching `@utility` block to `globals.css` first** (copy an existing block; include
+   `letter-spacing: var(--typography-…-letter-spacing)`), then use the class. Do not
+   inline the CSS vars.
+4. **No weight overrides on utilities.** Do not add `font-bold`,
+   `font-semibold`, or `font-medium` on the same element as a typography
+   utility — they fight the token weight (Bold = 700, Semi Bold = 600,
+   Medium = 500, Regular = 400). Inline emphasis spans may use
+   `[font-weight:var(--font-weight-700)]` only when Figma shows a mixed-weight
+   run inside otherwise Regular body text.
+5. **Utility coverage gate.** Before implementing a slice, confirm every
+   `typography.json` leaf has a matching `@utility` in `globals.css`. Count
+   should match. Missing utility = blocker, same as a §4 miss.
+6. **Fonts must be loaded.** Brand faces (e.g. Inter via `next/font/google`,
+   Satoshi via Fontshare) must be wired in `app/layout.tsx` / `globals.css`
+   remaps. Never ship typography that depends on `system-ui` alone for brand text.
+
 After writing each component, open `contract.md §4 Tokens per element` and walk every row
 that applies to elements in that component. For each row, verify the exact token used in
-the className matches §4 — background, text, border, radius, font size, font weight.
+the className matches §4 — background, text, border **colour and width**, radius, font size, font weight.
 
 Example check:
 ```
@@ -528,9 +586,16 @@ slices without a review between each one.
 #### If the user says APPROVE
 
 - Mark the slice approved in conversation (and optionally note in `memory.md`).
+- **Step 7b — Commit approved slice (mandatory):**
+  ```bash
+  git add app/ components/ constants/ types/ features/<parent-id>/memory.md
+  git commit -m "feat(<fe-jira-id>-FE): implement <slice name> (GH#<N>)"
+  ```
 - Tell the user what the **next slice** is (next GitHub issue) and which skill
   to invoke first (`/figma-extract` for the new slice's nodes).
-- Do **not** auto-commit unless the user explicitly asks to commit and push.
+
+See `skills/_shared/pipeline-git-commit.md`. Pipeline commit steps override
+generic "only commit when asked" — APPROVE is the gate for per-slice commits.
 
 ### Step 8 — Write to memory
 ```markdown

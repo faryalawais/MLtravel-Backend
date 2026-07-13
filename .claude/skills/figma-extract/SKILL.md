@@ -696,13 +696,19 @@ Steps:
      value differs from the Figma measurement. If `space.md = 16px` and
      Figma shows 20px, `space.md` is NOT a valid mapping — it is an
      approximation and will cause visual drift.
+   - **Reusing old section / prior-feature token names is forbidden** when
+     their resolved value ≠ this frame's Figma value. Same name is OK only
+     on exact value match.
+   - Prefer REST `boundVariables` / VariableID resolution when present; still
+     verify the resolved CSS/px/hex equals Figma before accepting the bind.
    - For colours: the exact Figma colour hex must match the token's resolved
-     hex exactly. No "visually close" substitutions.
+   hex exactly. No "visually close" substitutions.
    - Record in `notes.md` under "Token mapping" a table:
      `| Node path | Property | Figma value | Token used | Resolved value | Exact? |`
      Every row must have Exact? = YES.
    - **If ANY measurement has no exact matching token — STOP immediately.**
-     Do not proceed to write outputs or advance to `design-contract`.
+     Do not proceed to write outputs or advance to `design-contract` or
+     `ui-registry-build`.
      Instead, produce a **Missing Tokens Action Report** in
      `features/<id>/figma/missing-tokens-report.md` using this format:
 
@@ -716,11 +722,15 @@ Steps:
      ## Action required (designer)
      
      For each row below, add the listed token to `tokens/semantics.json`
-     (or `tokens/primitives.json` for a new scale step), then run:
+     (or `tokens/primitives.json` for a new scale step) via the
+     **design-tokens** skill (extend from this report — exact Figma value
+     only; never nearest), then run:
          npm run tokens:validate
          npm run tokens:validate-figma-alignment
          npm run tokens:build
-     Once all rows are resolved, re-run figma-extract for this feature.
+     Once all rows are resolved, re-run **ui-registry-build** (not contract)
+     so `$tokens` bind only after `tokens:build` PASS. Re-run figma-extract
+     token-mapping notes if measurements changed.
      
      | # | Node path | Property | Figma value | Closest existing token | Closest resolved value | Recommended new token |
      |---|-----------|----------|-------------|------------------------|------------------------|-----------------------|
@@ -751,9 +761,11 @@ Steps:
      The design system is incomplete for this feature.
 
      Designer action: open features/<id>/figma/missing-tokens-report.md
-     and add the listed tokens to tokens/semantics.json, then re-run:
+     and run design-tokens to add the listed **exact** primitive + semantic
+     tokens (never nearest/old section tokens), then:
        npm run tokens:build
-       /figma-extract (frame mode, this feature)
+       /ui-registry-build (bind $tokens only after build PASS)
+       /figma-extract only if measurements need refresh
 
      To skip token addition and allow raw values instead (last resort):
        Set  allow_raw_values: true  in the feature's backlog.yaml entry.
@@ -1094,3 +1106,31 @@ non-empty array of distinct lowerCamelCase strings.
 ## Failure handling
 If the Figma MCP is unavailable, or the file/frame URL is wrong, **stop and
 report**. Do not invent measurements, tokens, or images.
+
+## Downstream order (NON-NEGOTIABLE)
+
+After a successful slice extract (or after resolving missing tokens):
+
+1. **Exact token or new token** — never nearest / old wrong-value names
+2. **`design-tokens`** → `npm run tokens:build` → `tokens-report.md` PASS
+3. **`ui-registry-build`** → bind `$tokens` (enrich from `boundVariables` when
+   available; still verify resolved value = Figma)
+4. **`registry-validate`** — `tokenMissing` is blocking
+5. **`design-contract`** then **`fe-implement`**
+
+Do **not** run `ui-registry-build` / `design-contract` / `fe-implement` while
+`missing-tokens-report.md` has unresolved rows (unless `allow_raw_values: true`).
+
+## Step final — Commit (mandatory)
+
+After success criteria pass, on `feature/<fe-jira-id>` (create via `design-contract`
+if this is the first FE skill and branch does not exist yet — see `design-contract`
+Step 0):
+
+```bash
+git add features/<id>/figma/ features/<id>/memory.md
+git commit -m "chore(<id>): figma-extract <slice-name or feature>"
+```
+
+See `skills/_shared/pipeline-git-commit.md` for branch rules. Do not leave extract
+artifacts uncommitted.

@@ -107,7 +107,32 @@ For each component, check spec.json for variant data or layer naming that
 indicates states (hover, active, disabled, empty, error, loading).
 Default state is always `default`.
 
-### Step 4 — Map token bindings
+### Step 4 — Map token bindings (STRICT — exact only)
+
+**Pipeline order (NON-NEGOTIABLE) — do not start this step until true:**
+
+1. Slice `figma-extract` complete (`validate:figma-extract` + `validate:layout` PASS)
+2. Every Figma measurement for this slice has an **exact** token **or** new
+   primitive + semantic were added (see `missing-tokens-report.md`)
+3. `design-tokens` ran → `npm run tokens:build` → `reports/tokens-report.md`
+   ends with `STATUS: PASS`
+4. **Only then** write / enrich registry `$tokens`
+
+If step 2–3 are incomplete → **STOP**. Do not bind `$tokens`. Instruct the
+user to resolve missing tokens via `design-tokens` (extend + build), then
+re-run this skill.
+
+**Exact match rule (NON-NEGOTIABLE):**
+
+- A token may be bound only when its **resolved** value equals the Figma
+  measurement (spacing/radius within 1px; colour hex exact).
+- **"Nearest" / "closest" / "visually close" / "reuse old section token" is
+  FORBIDDEN.** Old token *names* from prior features/slices are allowed
+  **only if** their resolved value still matches this frame exactly.
+- Never remap a new Figma value onto an existing token whose resolved px/hex
+  differs — that creates pixel-perfect gaps. Add a new primitive + semantic
+  instead, rebuild tokens, then bind the new name.
+
 For each component, look up which design tokens apply based on:
 - **REST `boundVariables` (preferred):** after `build:spec-from-cache`, each
   spec node may carry `boundVariables` from the Figma cache. Run:
@@ -120,14 +145,23 @@ For each component, look up which design tokens apply based on:
   **PAT scope:** `file_variables:read` is required for live VariableID → name
   resolution; without it, only template `variableId` stubs and manual `$tokens`
   apply — the script warns when the API returns 403.
-- Background colour → `$background` token from `tokens-report.md`
-- Text colour → `$color` token
-- Border → `$border` token
-- Border radius → `$radius` token
-- Spacing/padding → `$spacing` token
+- After enrich (or on manual bind), **verify resolved value vs Figma** for
+  every `$tokens` slot. If VariableID resolves to a semantic whose compiled
+  value ≠ Figma → treat as missing token (do not keep the wrong binding).
+- Background colour → `$background` token from `tokens-report.md` (**exact**)
+- Text colour → `$color` token (**exact**)
+- Border → `$border` token (**exact**) **and** Figma `strokeWeight` (width is part of the
+  binding — e.g. SectionPill `0.3px`; colour alone is incomplete)
+- Border radius → `$radius` token (**exact**)
+- Spacing/padding → `$spacing` token (**exact**)
 
-If a Figma value has no exact token match, record `"tokenMissing": true`
-and note the raw Figma value.
+If a Figma value has no exact token match → **STOP this skill**. Do **not**
+write a "close enough" `$tokens` entry. Do **not** leave a silent wrong bind.
+Write/update `features/<fe-jira-id>/figma/missing-tokens-report.md`, set
+`"tokenMissing": true` only as a temporary marker that **blocks**
+`design-contract` / `fe-implement`, and hand off to `design-tokens` to add
+primitive + semantic for the exact Figma value, then `tokens:build`, then
+re-run `ui-registry-build`.
 
 ### Step 5 — Write `tokens/ui-registry.json`
 
@@ -186,6 +220,8 @@ Set FE ticket to `ui-registry-ready`.
 - `tokens/ui-registry.json` updated with all Figma components
 - Every named Figma element has a `component.*` entry (no element skipped)
 - Every component entry has `$figmaNode`, `$states`, and `$tokens`
+- **Zero `tokenMissing`** on this feature's entries; every `$tokens` slot
+  resolves to a value that **exactly** matches Figma (no nearest/old binds)
 - **Motion (when animation twins exist):** every `motion-diffs.json` `testId`
   and every chain `trigger.targetTestId` has a registry entry with
   `$figmaLayerName` where applicable
@@ -201,6 +237,12 @@ Set FE ticket to `ui-registry-ready`.
 - Never merge-overwrite entries from other features in the registry.
 - If spec.json is missing or empty → stop. Do not write the registry.
   Report and instruct user to run `figma-extract` first.
+- **Token fidelity:** never bind a nearest/old token whose resolved value ≠
+  Figma. Order is always: extract → exact-or-new tokens → `tokens:build` →
+  registry `$tokens`. Binding `$tokens` before `tokens:build` PASS is forbidden.
+- **`tokenMissing` blocks downstream.** Any entry with `tokenMissing: true`
+  means this skill is incomplete — do not claim `ui-registry-ready` or advance
+  to `design-contract` until every slot has an exact token after rebuild.
 - **Motion paths:** never invent `component.*.motion.*` without a matching row
   in `motion-diffs.json` or `motion-chains.json` trigger — paths are contracts
   for `validate:motion-chains` and `fe-implement` wiring.

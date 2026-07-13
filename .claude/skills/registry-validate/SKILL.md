@@ -56,9 +56,14 @@ openapi-author completes".
 **Failure output:** list of components with `$dataSource` pointing to
 non-existent endpoints.
 
-### Check 5 — Missing tokens
-Flag any entry with `"tokenMissing": true` as a warning (not a blocking
-failure). Display the raw Figma values so the designer can add tokens.
+### Check 5 — Missing / inexact tokens (BLOCKING)
+Any entry with `"tokenMissing": true` is a **hard failure** (exit 1) — not a
+warning. Display the raw Figma values and instruct: add exact primitive +
+semantic via `design-tokens`, run `tokens:build`, re-run `ui-registry-build`.
+
+Also fail if `$tokens` are present but the skill notes / memory claim a
+nearest-token bind was used. Approximations and reuse of old section tokens
+whose resolved value ≠ Figma are fidelity bugs — same as `tokenMissing`.
 
 ### Check 6 — Motion path coverage (when motion JSON exists)
 If `features/<fe-jira-id>/figma/motion-diffs.json` exists:
@@ -87,12 +92,13 @@ Run all applicable checks. Collect all failures.
 - Return to `ui-registry-build` to fix
 
 ## Success criteria
-- Checks 1–4 all pass
+- Checks 1–5 all pass (`tokenMissing` must be zero)
 - Check 6 passes when motion JSON exists (or skipped when no animation twins)
-- Check 5 warnings noted but do not block
 - Memory updated
 
 ## Hard rules
-- Missing token warnings do not block the gate — only missing entries and
-  malformed paths block.
+- **`tokenMissing` blocks the gate** — same severity as missing entries /
+  malformed paths. Do not advance to `design-contract` until resolved.
 - Never modify `ui-registry.json` — this skill only reads and reports.
+- Never advise binding the nearest existing token to clear Check 5 — require
+  new exact tokens + `tokens:build` instead.
